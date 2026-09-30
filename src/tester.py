@@ -29,9 +29,10 @@ class PathTester:
         ax.set_xlabel("X [m]")
         ax.set_ylabel("Y [m]")
         ax.set_title("FSAI-Style Cone Track Path Planning Test")
-        # Fix the visible world window to 6x6 meters centered at the origin
-        ax.set_xlim(-1.0, 6.0)
-        ax.set_ylim(-1.0, 6.0)
+        # Include the complete route and translated/rotated scenarios.
+        visible = [(self.car_pose.x, self.car_pose.y)] + [(c.x, c.y) for c in self.cones] + path
+        ax.set_xlim(min(p[0] for p in visible) - 1.0, max(p[0] for p in visible) + 1.0)
+        ax.set_ylim(min(p[1] for p in visible) - 1.0, max(p[1] for p in visible) + 1.0)
 
         # Plot cones by color
         yellow_x = [c.x for c in self.cones if c.color == 0]
@@ -39,13 +40,10 @@ class PathTester:
         blue_x = [c.x for c in self.cones if c.color == 1]
         blue_y = [c.y for c in self.cones if c.color == 1]
 
-        handles = []
         if yellow_x:
-            h_y = ax.scatter(yellow_x, yellow_y, c="gold", edgecolors="black", label="Yellow (Right)")
-            handles.append(h_y)
+            ax.scatter(yellow_x, yellow_y, c="gold", edgecolors="black", label="Yellow (Right)")
         if blue_x:
-            h_b = ax.scatter(blue_x, blue_y, c="royalblue", edgecolors="black", label="Blue (Left)")
-            handles.append(h_b)
+            ax.scatter(blue_x, blue_y, c="royalblue", edgecolors="black", label="Blue (Left)")
 
         # Plot car pose and heading arrow
         ax.scatter([self.car_pose.x], [self.car_pose.y], c="red", s=60, marker="o", label="Car")
@@ -57,8 +55,7 @@ class PathTester:
             py = [p[1] for p in path]
             ax.plot(px, py, "-", color="limegreen", linewidth=2.0, label="Planned Path")
 
-        if handles:
-            ax.legend(loc="best")
+        ax.legend(loc="best")
 
         plt.show()
 

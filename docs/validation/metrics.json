@@ -1,0 +1,290 @@
+[
+  {
+    "scenario": "1",
+    "points": 33,
+    "length_m": 8.0,
+    "max_step_m": 0.25,
+    "min_cone_clearance_m": null,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "2",
+    "points": 33,
+    "length_m": 7.9916391546570305,
+    "max_step_m": 0.24999999845160975,
+    "min_cone_clearance_m": 0.5163570396624875,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "3",
+    "points": 33,
+    "length_m": 7.992174066404993,
+    "max_step_m": 0.2500000000000018,
+    "min_cone_clearance_m": 0.4781082319494886,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "4",
+    "points": 33,
+    "length_m": 7.998232466833409,
+    "max_step_m": 0.24999977066681003,
+    "min_cone_clearance_m": 0.9865657231783884,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "5",
+    "points": 33,
+    "length_m": 7.977879847455764,
+    "max_step_m": 0.24999980004700273,
+    "min_cone_clearance_m": 0.9830214050354501,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "6",
+    "points": 33,
+    "length_m": 7.989606080790986,
+    "max_step_m": 0.25,
+    "min_cone_clearance_m": 0.598844522756017,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "7",
+    "points": 33,
+    "length_m": 7.994484352094791,
+    "max_step_m": 0.2500000000000009,
+    "min_cone_clearance_m": 0.3847440473689927,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "8",
+    "points": 33,
+    "length_m": 7.979567821862141,
+    "max_step_m": 0.24999999741550832,
+    "min_cone_clearance_m": 0.34179396753707614,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "9",
+    "points": 33,
+    "length_m": 7.999242278520467,
+    "max_step_m": 0.2499998744699299,
+    "min_cone_clearance_m": 0.994260413907972,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "10",
+    "points": 33,
+    "length_m": 7.999859339744195,
+    "max_step_m": 0.2499999748676075,
+    "min_cone_clearance_m": 0.4898063175543773,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "11",
+    "points": 33,
+    "length_m": 7.992097931689708,
+    "max_step_m": 0.2500000000000006,
+    "min_cone_clearance_m": 0.2970393963452896,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "12",
+    "points": 33,
+    "length_m": 7.996053941723657,
+    "max_step_m": 0.2499998523035854,
+    "min_cone_clearance_m": 0.9568310954997534,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "13",
+    "points": 33,
+    "length_m": 7.990460781320186,
+    "max_step_m": 0.2500000000000018,
+    "min_cone_clearance_m": 0.9140203544371645,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "14",
+    "points": 33,
+    "length_m": 7.999999999999999,
+    "max_step_m": 0.25000000000000033,
+    "min_cone_clearance_m": 3.605551275463989,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "15",
+    "points": 33,
+    "length_m": 7.9972847070776005,
+    "max_step_m": 0.2499942412281843,
+    "min_cone_clearance_m": 0.941248966519937,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "16",
+    "points": 33,
+    "length_m": 7.993224280348298,
+    "max_step_m": 0.2500000000000008,
+    "min_cone_clearance_m": 0.9758846887735996,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "17",
+    "points": 33,
+    "length_m": 7.99973429155464,
+    "max_step_m": 0.24999995110254347,
+    "min_cone_clearance_m": 0.9949733148362477,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "18",
+    "points": 33,
+    "length_m": 7.999846317728859,
+    "max_step_m": 0.24999994351528648,
+    "min_cone_clearance_m": 1.1119234964523659,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "19",
+    "points": 33,
+    "length_m": 7.996650200269995,
+    "max_step_m": 0.25,
+    "min_cone_clearance_m": 0.4981863286378465,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "20",
+    "points": 33,
+    "length_m": 7.999102945633611,
+    "max_step_m": 0.249999999974745,
+    "min_cone_clearance_m": 0.9907829810781681,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "21",
+    "points": 33,
+    "length_m": 8.0,
+    "max_step_m": 0.25,
+    "min_cone_clearance_m": 1.0,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "22",
+    "points": 33,
+    "length_m": 8.0,
+    "max_step_m": 0.25,
+    "min_cone_clearance_m": 1.0,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "23",
+    "points": 33,
+    "length_m": 7.999568236728524,
+    "max_step_m": 0.2499999999999991,
+    "min_cone_clearance_m": 0.990129112792814,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "24",
+    "points": 33,
+    "length_m": 7.999568236728524,
+    "max_step_m": 0.2499999999999991,
+    "min_cone_clearance_m": 0.990129112792814,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "25",
+    "points": 33,
+    "length_m": 8.0,
+    "max_step_m": 0.25,
+    "min_cone_clearance_m": 1.0,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "26",
+    "points": 33,
+    "length_m": 7.999479439957355,
+    "max_step_m": 0.250000000000001,
+    "min_cone_clearance_m": 0.8944271909999159,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "27",
+    "points": 33,
+    "length_m": 8.0,
+    "max_step_m": 0.25,
+    "min_cone_clearance_m": 1.0,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "28",
+    "points": 33,
+    "length_m": 8.0,
+    "max_step_m": 0.2500000000000011,
+    "min_cone_clearance_m": null,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "29",
+    "points": 33,
+    "length_m": 8.0,
+    "max_step_m": 0.25,
+    "min_cone_clearance_m": 2.23606797749979,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "30",
+    "points": 33,
+    "length_m": 8.0,
+    "max_step_m": 0.25,
+    "min_cone_clearance_m": 1.0,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "31",
+    "points": 33,
+    "length_m": 8.0,
+    "max_step_m": 0.25,
+    "min_cone_clearance_m": 1.0,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  },
+  {
+    "scenario": "32",
+    "points": 33,
+    "length_m": 8.0,
+    "max_step_m": 0.25,
+    "min_cone_clearance_m": 1.5,
+    "observed_boundary_crossings": 0,
+    "output_contract_passed": true
+  }
+]
