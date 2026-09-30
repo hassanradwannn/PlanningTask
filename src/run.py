@@ -15,15 +15,25 @@ from src.tester import PathTester
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run PathTester for a selected scenario.")
-    parser.add_argument(
+    parser = argparse.ArgumentParser(description="Visualize one scenario or all scenarios.")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument(
         "--scenario",
         type=str,
         default="1",
         choices=get_scenario_names(),
         help="Scenario name to load",
     )
+    selection.add_argument("--all", action="store_true", help="Show every scenario in gallery windows")
+    parser.add_argument("--sequential", action="store_true",
+                        help="With --all, show one scenario at a time; close each plot to continue")
     args = parser.parse_args()
+
+    if args.sequential and not args.all:
+        parser.error("--sequential requires --all")
+    if args.all:
+        PathTester.run_all(sequential=args.sequential)
+        return
 
     cones, car_pose = make_scenario(args.scenario)
     tester = PathTester(cones=cones, car_pose=car_pose)
@@ -32,5 +42,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 

@@ -49,6 +49,16 @@ def boundary_crossings(path, cones):
                for a, b in zip(path[:-1], path[1:]) for c, d in segments)
 
 
+def turn_metrics(path):
+    """Heading jumps and curvature estimated from the returned polyline."""
+    delta = np.diff(path, axis=0)
+    steps = np.linalg.norm(delta, axis=1)
+    unit = delta / np.maximum(steps[:, None], 1e-12)
+    angles = np.arccos(np.clip(np.sum(unit[:-1] * unit[1:], axis=1), -1, 1))
+    curvature = angles / np.maximum((steps[:-1] + steps[1:]) / 2, 1e-12)
+    return float(np.rad2deg(angles.max())), float(curvature.max())
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("docs/validation"))
@@ -65,14 +75,19 @@ def main():
         steps = np.linalg.norm(np.diff(path, axis=0), axis=1)
         clearance = cone_clearance(path, cones)
         crossings = int(boundary_crossings(path, cones))
+        max_turn, max_curvature = turn_metrics(path)
+        smooth = max_turn < 15.0 and max_curvature < 3.0
         valid = bool(np.isfinite(path).all() and np.allclose(path[0], [car.x, car.y])
                      and 5.0 <= steps.sum() <= 10.0 and steps.max() <= 0.5 + 1e-9)
         row = {"scenario": name, "points": len(path), "length_m": float(steps.sum()),
                "max_step_m": float(steps.max()), "min_cone_clearance_m": clearance,
-               "observed_boundary_crossings": crossings, "output_contract_passed": valid}
+               "observed_boundary_crossings": crossings, "output_contract_passed": valid,
+               "max_heading_change_deg": max_turn,
+               "estimated_peak_curvature_per_m": max_curvature,
+               "smoothness_checks_passed": smooth}
         rows.append(row)
         # Geometric checks accompany the output contract on all supplied cases.
-        if not valid or (clearance is not None and clearance < 0.25 - 1e-8) or crossings:
+        if not valid or not smooth or (clearance is not None and clearance < 0.25 - 1e-8) or crossings:
             failures.append(name)
         for color, face in ((0, "gold"), (1, "royalblue")):
             side = [c for c in cones if c.color == color]
@@ -80,7 +95,7 @@ def main():
         ax.plot(path[:, 0], path[:, 1], color="green")
         ax.scatter([car.x], [car.y], color="red", s=25)
         ax.arrow(car.x, car.y, np.cos(car.yaw), np.sin(car.yaw), color="red", head_width=0.15)
-        ax.set_title(f"{name}: {steps.sum():.2f} m; crossings={crossings}")
+        ax.set_title(f"{name}: {steps.sum():.2f} m; max turn={max_turn:.1f}°")
         ax.set_aspect("equal", adjustable="datalim")
         ax.grid(True, linestyle=":", alpha=0.5)
     for ax in list(axes.flat)[len(names):]:

@@ -63,17 +63,19 @@ The planner uses **Delaunay triangulation and a directed graph search**. Mixed-c
 triangle edges form gates across the track. Their midpoints become graph nodes,
 connected through shared triangles. The search follows the estimated track
 direction, prefers lower turn costs, and reaches the furthest connected gate.
-A cubic Hermite spline connects the car to the selected centerline. The output
-starts at the car and contains 33 world-coordinate points covering approximately
-8 m at at most 0.25 m spacing on the supplied scenarios.
+A cubic B-spline blends the selected centerline with continuous first and
+second derivatives. The output starts at the car and contains 81 world-coordinate
+points covering approximately 8 m at at most 0.1 m spacing on the supplied scenarios.
 
 For one visible side, neighboring cones estimate its tangent and an assumed
 **2 m track width** supplies virtual opposite cones. This makes three-cone bends
 usable by the same triangulation method. Two-cone or collinear inputs use compatible
 gate midpoints directly. No usable forward gates produce a straight heading path.
 
-Smoothing is checked against cone clearance and boundary segments. An unresolved
-spline falls back to the graph polyline. Sparse inputs, inferred boundaries, and
+Candidate curves are checked against cone clearance and boundary segments, and
+the one with the lowest peak curvature is selected. Difficult starting poses
+receive a bounded search over entry/exit controls. If no checked smooth curve
+can be found, the planner returns the heading fallback. Sparse inputs, inferred boundaries, and
 inconsistent starting headings do not establish physical vehicle feasibility;
 see [the report](REPORT.md) for the exact checks and limitations.
 
@@ -85,13 +87,19 @@ Run from the repository root after installing `requirements.txt`:
 python -m unittest discover -s tests -v
 python scripts/validate_paths.py
 python -m src.run --scenario 23
+python -m src.run --all
+python -m src.run --all --sequential
 ```
+
+`--all` opens two gallery windows with 16 scenarios each. For larger individual
+plots, add `--sequential` and close each plot to continue to the next scenario.
 
 The validation script writes [numerical results](docs/validation/metrics.json)
 and [scenario plots](docs/validation/scenarios.png). All 32 supplied cases pass
 the output contract, maintain at least 0.25 m clearance from cone centers, and
-have no strict crossings of observed boundary segments. The automated suite
-contains 14 tests.
+have no strict crossings of observed boundary segments. Smoothness checks bound
+heading changes between samples and estimate peak curvature. The automated
+suite contains 19 tests, including the gallery and sequential runner.
 
 If ROS has added unrelated packages to `PYTHONPATH`, run commands with
 `env -u PYTHONPATH`. For a headless machine, use `MPLBACKEND=Agg`; if Matplotlib's

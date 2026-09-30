@@ -14,9 +14,10 @@ The full implementation and rationale are in [REPORT.md](REPORT.md).
 - [x] Handle single-sided, two-cone, collinear, duplicate, and unavailable-forward-gate inputs.
 - [x] Part 2: infer an opposite boundary from three same-side cones using local normals.
 - [x] Retain the original 20 scenarios and add 12 new cases.
-- [x] Smooth and sample approximately 8 m at no more than 0.25 m spacing.
+- [x] Blend the graph route with a C2 cubic B-spline and sample approximately 8 m at 0.1 m spacing.
 - [x] Check all 32 scenarios numerically and inspect their plots.
-- [x] Pass 14 behavioral tests, including transformations and input-order invariance.
+- [x] Pass 19 behavioral tests, including smoothness, transformations, and input-order invariance.
+- [x] Add all-scenario gallery and sequential visualization modes.
 - [x] Update dependencies, plot bounds, README, and the Markdown report.
 
 ## Submission

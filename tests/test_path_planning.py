@@ -34,7 +34,7 @@ class PathPlanningTests(unittest.TestCase):
 
     def test_no_cones_follow_exact_world_heading(self):
         car = CarPose(3.0, -2.0, 0.7)
-        distances = np.linspace(0.0, 8.0, 33)
+        distances = np.linspace(0.0, 8.0, 81)
         expected = np.array([car.x, car.y]) + distances[:, None] * [math.cos(car.yaw), math.sin(car.yaw)]
         np.testing.assert_allclose(self.plan([], car), expected, atol=1e-10)
 
@@ -116,6 +116,22 @@ class PathPlanningTests(unittest.TestCase):
             path = self.plan(cones, car)
         self.assert_contract(path, car)
         np.testing.assert_allclose(path[:, 1], 0.0, atol=1e-9)
+
+    def test_all_scenarios_have_no_abrupt_heading_jumps(self):
+        for name in get_scenario_names():
+            with self.subTest(scenario=name):
+                cones, car = make_scenario(name)
+                path = self.plan(cones, car)
+                delta = np.diff(path, axis=0)
+                steps = np.linalg.norm(delta, axis=1)
+                headings = delta / steps[:, None]
+                turns = np.arccos(np.clip(np.sum(headings[:-1] * headings[1:], axis=1), -1, 1))
+                self.assertLess(float(np.rad2deg(turns.max())), 15.0)
+                # Guard against hiding a tight turn merely by adding samples.
+                curvature = turns / ((steps[:-1] + steps[1:]) / 2)
+                self.assertLess(float(curvature.max()), 3.0)
+                initial = np.array([math.cos(car.yaw), math.sin(car.yaw)])
+                self.assertGreater(float(np.dot(headings[0], initial)), math.cos(0.15))
 
 
 if __name__ == "__main__":

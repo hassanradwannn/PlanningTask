@@ -40,10 +40,10 @@ class PathPlanning:
         from itertools import combinations
 
         import numpy as np
-        from scipy.interpolate import CubicHermiteSpline
+        from scipy.interpolate import BSpline
         from scipy.spatial import Delaunay, QhullError
 
-        horizon, spacing = 8.0, 0.25
+        horizon, spacing = 8.0, 0.1
         assumed_width, clearance = 2.0, 0.25
         origin = np.array([self.car_pose.x, self.car_pose.y], dtype=float)
         yaw = self.car_pose.yaw
@@ -219,32 +219,25 @@ class PathPlanning:
             side = side[np.argsort(side @ direction, kind="stable")]
             boundary_segments.extend(zip(side[:-1], side[1:]))
 
-        def segment_distance(a, b, cone):
-            delta = b - a
-            t = float(np.clip(np.dot(cone - a, delta) / max(np.dot(delta, delta), 1e-12), 0, 1))
-            return float(np.linalg.norm(cone - (a + t * delta)))
-
-        def cross(a, b):
-            return float(a[0] * b[1] - a[1] * b[0])
-
         def acceptable(curve):
-            for a, b in zip(curve[:-1], curve[1:]):
-                if any(segment_distance(a, b, cone) < clearance - 1e-8 for cone in real_points):
+            if not np.isfinite(curve).all():
+                return False
+            a, b = curve[:-1], curve[1:]
+            delta = b - a
+            squared_lengths = np.maximum(np.sum(delta * delta, axis=1), 1e-12)
+            for cone in real_points:
+                t = np.clip(np.sum((cone - a) * delta, axis=1) / squared_lengths, 0, 1)
+                if np.min(np.linalg.norm(cone - (a + t[:, None] * delta), axis=1)) < clearance - 1e-8:
                     return False
-                for c, d in boundary_segments:
-                    if (cross(b - a, c - a) * cross(b - a, d - a) < -1e-10
-                            and cross(d - c, a - c) * cross(d - c, b - c) < -1e-10):
-                        return False
+            for c, d in boundary_segments:
+                ca, da = c - a, d - a
+                ab_c = delta[:, 0] * ca[:, 1] - delta[:, 1] * ca[:, 0]
+                ab_d = delta[:, 0] * da[:, 1] - delta[:, 1] * da[:, 0]
+                cd_a = (d[0] - c[0]) * (a[:, 1] - c[1]) - (d[1] - c[1]) * (a[:, 0] - c[0])
+                cd_b = (d[0] - c[0]) * (b[:, 1] - c[1]) - (d[1] - c[1]) * (b[:, 0] - c[0])
+                if np.any((ab_c * ab_d < -1e-10) & (cd_a * cd_b < -1e-10)):
+                    return False
             return True
-
-        lengths = np.linalg.norm(np.diff(anchors, axis=0), axis=1)
-        parameters = np.concatenate(([0.0], np.cumsum(lengths)))
-        tangents = np.array([unit(anchors[min(i + 1, len(anchors) - 1)]
-                                  - anchors[max(i - 1, 0)], direction)
-                             for i in range(len(anchors))])
-        tangents[0] = [1.0, 0.0]  # exact initial yaw in local coordinates
-        tangents[-1] = final_direction
-        samples = np.linspace(0.0, parameters[-1], max(2, int(parameters[-1] / 0.05) + 1))
 
         def resample(curve):
             lengths = np.linalg.norm(np.diff(curve, axis=0), axis=1)
@@ -255,15 +248,72 @@ class PathPlanning:
             targets = np.linspace(0.0, distance, int(math.ceil(distance / spacing)) + 1)
             return np.column_stack([np.interp(targets, cumulative, curve[:, axis]) for axis in (0, 1)])
 
-        # Shorten tangent handles if smoothing crosses a boundary or a cone.
-        # Validate the sampled path too: its connecting chords can cut corners.
-        for scale in (1.0, 0.5, 0.25):
-            curve = CubicHermiteSpline(parameters, anchors, scale * tangents)(samples)
+        # Approximate the gate route with a clamped cubic B-spline. Gate
+        # midpoints are controls, not mandatory interpolation knots; simple
+        # interior knots keep the curve C2 and avoid rapid tangent changes.
+        candidates = []
+        first_distance = float(np.linalg.norm(anchors[1]))
+        entry_direction = unit(anchors[2] - anchors[1], final_direction)
+
+        def consider(handle, approach=0.0, offset=0.0, broad_exit=False, guide_direction=None):
+            controls = [anchors[0], np.array([min(handle, first_distance * 0.8), 0.0])]
+            if approach:
+                guide = entry_direction if guide_direction is None else guide_direction
+                controls.append(anchors[1] - approach * guide)
+            controls.extend(anchors[1:-1])
+            controls.append(anchors[-2] + handle * final_direction
+                            + offset * left_normal(final_direction))
+            if broad_exit:
+                # Extra exit controls give a reversal room to bend instead of
+                # collapsing into a near-zero tangent at the last gate.
+                controls.append(anchors[-2] + 2 * handle * final_direction
+                                + offset * left_normal(final_direction))
+                controls.append(anchors[-1] - 0.5 * final_direction)
+            controls.append(anchors[-1])
+            controls = np.array(controls)
+            chord = np.linalg.norm(np.diff(controls, axis=0), axis=1)
+            control_parameters = np.concatenate(([0.0], np.cumsum(chord)))
+            interior = [np.mean(control_parameters[i:i + 3])
+                        for i in range(1, len(controls) - 3)]
+            if len(interior) > 1 and np.any(np.diff(interior) <= 1e-9):
+                return  # keep interior knots simple for C2 continuity
+            knots = np.concatenate((np.zeros(4), interior,
+                                    np.full(4, control_parameters[-1])))
+            spline = BSpline(knots, controls, 3)
+            dense_parameters = np.linspace(0.0, control_parameters[-1],
+                                           max(400, int(control_parameters[-1] / 0.015)))
+            curve = spline(dense_parameters)
             sampled = resample(curve)
-            if acceptable(sampled):
-                return world_path(sampled)
-        # A polyline preserves graph topology when no checked spline is usable.
-        # In inconsistent scenes even this fallback can cross a boundary; the
-        # assignment has no stop/failure return type. This is a best-effort path.
-        polyline = np.column_stack([np.interp(samples, parameters, anchors[:, axis]) for axis in (0, 1)])
-        return world_path(resample(polyline))
+            if not acceptable(sampled):
+                return
+            velocity = spline(dense_parameters, 1)
+            acceleration = spline(dense_parameters, 2)
+            speed = np.linalg.norm(velocity, axis=1)
+            if speed.min() < 1e-5:
+                return  # a vanishing tangent can create a cusp
+            curvature = np.abs(velocity[:, 0] * acceleration[:, 1]
+                               - velocity[:, 1] * acceleration[:, 0]) / speed**3
+            candidates.append((float(curvature.max()), sampled))
+
+        for handle in (0.5, 1.0, 1.5, 2.0):
+            consider(handle)
+        if not candidates or min(item[0] for item in candidates) > 1.0:
+            # A bounded search adjusts entry/exit controls for difficult poses.
+            # Every candidate still passes cone and boundary checks.
+            reversal = np.dot(unit(anchors[-2] - anchors[-3]), final_direction) < 0
+            offsets = (0.0, -0.75, 0.75, -1.5, 1.5) if reversal else (0.0,)
+            guides = [entry_direction]
+            if np.dot(entry_direction, final_direction) < 0.999:
+                guides.append(final_direction)
+            for handle in (0.5, 1.5, 3.0):
+                for approach in (0.0, 0.75, 1.5):
+                    for offset in offsets:
+                        for guide in guides if approach else guides[:1]:
+                            consider(handle, approach, offset, broad_exit=True,
+                                     guide_direction=guide)
+        if candidates:
+            return world_path(min(candidates, key=lambda item: item[0])[1])
+        # No checked smooth connection was found. Keep the heading fallback
+        # smooth; the interface has no failure/stop status and this cannot
+        # guarantee a clear route through an unknown or inconsistent scene.
+        return straight()

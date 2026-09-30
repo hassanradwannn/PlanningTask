@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List
+from typing import Dict, List
 
 import matplotlib.pyplot as plt
 
@@ -22,13 +22,58 @@ class PathTester:
         self._plot_scene(path)
         return path
 
-    def _plot_scene(self, path: Path2D) -> None:
-        _, ax = plt.subplots(figsize=(8, 6))
+    @classmethod
+    def run_all(cls, sequential: bool = False) -> Dict[str, Path2D]:
+        """Show all scenarios in two galleries, or one window at a time."""
+        import math
+        from matplotlib.lines import Line2D
+        from src.scenarios import get_scenario_names, make_scenario
+
+        names = get_scenario_names()
+        paths = {}
+        if sequential:
+            for name in names:
+                cones, car = make_scenario(name)
+                tester = cls(cones, car)
+                path = PathPlanning(car, cones).generatePath()
+                paths[name] = path
+                print(f"Scenario {name}/{len(names)} — close the plot to continue")
+                tester._plot_scene(path, title=f"Scenario {name}")
+                plt.close()
+            return paths
+
+        for start in range(0, len(names), 16):
+            page = names[start:start + 16]
+            fig, axes = plt.subplots(math.ceil(len(page) / 4), 4,
+                                     figsize=(16, 13), squeeze=False)
+            fig.suptitle(f"Path planning — scenarios {page[0]}–{page[-1]}", fontsize=16)
+            for name, ax in zip(page, axes.flat):
+                cones, car = make_scenario(name)
+                path = PathPlanning(car, cones).generatePath()
+                paths[name] = path
+                cls(cones, car)._plot_scene(path, ax=ax, title=f"Scenario {name}",
+                                            show=False, legend=False)
+            for ax in list(axes.flat)[len(page):]:
+                ax.set_visible(False)
+            fig.legend(handles=[
+                Line2D([], [], marker="o", linestyle="", color="royalblue", label="Blue (left)"),
+                Line2D([], [], marker="o", linestyle="", color="gold", label="Yellow (right)"),
+                Line2D([], [], marker="o", linestyle="", color="red", label="Car / heading"),
+                Line2D([], [], color="limegreen", label="Planned path"),
+            ], loc="upper center", bbox_to_anchor=(0.5, 0.965), ncol=4)
+            fig.tight_layout(rect=(0, 0, 1, 0.93))
+        plt.show()
+        return paths
+
+    def _plot_scene(self, path: Path2D, *, ax=None, title=None,
+                    show: bool = True, legend: bool = True) -> None:
+        if ax is None:
+            _, ax = plt.subplots(figsize=(8, 6))
         ax.set_aspect("equal", adjustable="box")
         ax.grid(True, linestyle=":", linewidth=0.5)
         ax.set_xlabel("X [m]")
         ax.set_ylabel("Y [m]")
-        ax.set_title("FSAI-Style Cone Track Path Planning Test")
+        ax.set_title(title or "FSAI-Style Cone Track Path Planning Test")
         # Include the complete route and translated/rotated scenarios.
         visible = [(self.car_pose.x, self.car_pose.y)] + [(c.x, c.y) for c in self.cones] + path
         ax.set_xlim(min(p[0] for p in visible) - 1.0, max(p[0] for p in visible) + 1.0)
@@ -55,9 +100,11 @@ class PathTester:
             py = [p[1] for p in path]
             ax.plot(px, py, "-", color="limegreen", linewidth=2.0, label="Planned Path")
 
-        ax.legend(loc="best")
+        if legend:
+            ax.legend(loc="best")
 
-        plt.show()
+        if show:
+            plt.show()
 
     def _draw_heading_arrow(self, ax) -> None:
         import math
