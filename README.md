@@ -59,25 +59,23 @@ Available scenarios: numeric names `1`..`32`. Cases `1`..`20` are the unchanged 
 
 ### Implemented solution
 
-The planner uses **Delaunay triangulation and a directed graph search**. Mixed-color
-triangle edges form gates across the track. Their midpoints become graph nodes,
-connected through shared triangles. The search follows the estimated track
-direction, prefers lower turn costs, and reaches the furthest connected gate.
-A cubic B-spline blends the selected centerline with continuous first and
-second derivatives. The output starts at the car and contains 81 world-coordinate
-points covering approximately 8 m at at most 0.1 m spacing on the supplied scenarios.
+The planner pairs opposite-color cones into center gates. Unmatched cones use a
+local boundary tangent and an inferred opposite side; when no pair supplies a
+width, it assumes a **2 m track**. This also handles three cones along a bend.
 
-For one visible side, neighboring cones estimate its tangent and an assumed
-**2 m track width** supplies virtual opposite cones. This makes three-cone bends
-usable by the same triangulation method. Two-cone or collinear inputs use compatible
-gate midpoints directly. No usable forward gates produce a straight heading path.
+It compares quintic Bézier routes with degree-four/five spline routes through
+the gates. Unmatched cones are explicitly reflected using a nearby observed
+blue–yellow pair, or a 2 m assumed width when no pair exists. Inferred cones
+appear as hollow markers in the viewer; gray discs show the 0.45 m margin.
 
-Candidate curves are checked against cone clearance and boundary segments, and
-the one with the lowest peak curvature is selected. Difficult starting poses
-receive a bounded search over entry/exit controls. If no checked smooth curve
-can be found, the planner returns the heading fallback. Sparse inputs, inferred boundaries, and
-inconsistent starting headings do not establish physical vehicle feasibility;
-see [the report](REPORT.md) for the exact checks and limitations.
+The cost penalizes observed boundary crossings, close passes to cones, missed
+gates, tight curvature, and backtracking. Final selection rejects candidates
+that violate clearance, gate passage, initial heading, or curvature checks.
+Curves join the straight continuation with zero curvature. All candidates begin
+along the car's yaw. Routes are approximately 8 m long, or 10 m when the last
+target lies behind the current heading, with at most 0.1 m point spacing.
+The same planner handles every scenario without case-specific paths. See
+[the report](REPORT.md) for the cost, assumptions, and limits.
 
 ### Validation
 
@@ -95,11 +93,17 @@ python -m src.run --all --sequential
 plots, add `--sequential` and close each plot to continue to the next scenario.
 
 The validation script writes [numerical results](docs/validation/metrics.json)
-and [scenario plots](docs/validation/scenarios.png). All 32 supplied cases pass
-the output contract, maintain at least 0.25 m clearance from cone centers, and
-have no strict crossings of observed boundary segments. Smoothness checks bound
-heading changes between samples and estimate peak curvature. The automated
-suite contains 19 tests, including the gallery and sequential runner.
+and [scenario plots](docs/validation/scenarios.png). It checks the output
+contract, at least 0.45 m clearance from cone centers, zero strict crossings
+of observed boundary segments, actual passage within 0.15 m of center gates,
+and bounded heading change and curvature.
+The automated suite includes regressions for the reported problem scenes.
+
+The current solution uses direct cone pairing and curve optimization rather
+than the earlier Delaunay graph. It produces continuous curves, but a real
+car's minimum turning radius and width still need to be supplied before
+claiming the route is physically drivable. No accepted curve results in a
+`ValueError`; the planner does not silently return a colliding candidate.
 
 If ROS has added unrelated packages to `PYTHONPATH`, run commands with
 `env -u PYTHONPATH`. For a headless machine, use `MPLBACKEND=Agg`; if Matplotlib's

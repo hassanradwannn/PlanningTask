@@ -17,6 +17,28 @@ import numpy as np
 from src.path_planning import PathPlanning
 from src.scenarios import get_scenario_names, make_scenario
 
+# Independent expected corridor stations for the reported regressions. Keeping
+# these in validation prevents an omitted or incorrect planner gate from making
+# a route that misses the track appear to pass.
+EXPECTED_GATES = {
+    "2": [(1, 2)], "3": [(1, 2), (3, 2)],
+    "5": [(3, 3), (4, 3)], "6": [(3, 3), (4, 3)],
+    "8": [(3, 2), (5, 2)], "10": [(5, 2.5)],
+    "11": [(1, 2.5), (4, 3.5)], "14": [(3, 3.5), (5, 3.5)],
+    "15": [(2, 4), (3, 3)], "19": [(2, 1.5), (5, 2.5)],
+    "26": [(2, 0), (4, 0.4), (6, 1.4)],
+}
+
+
+def gate_errors(path, gates):
+    a, delta = path[:-1], np.diff(path, axis=0)
+    squared = np.maximum(np.sum(delta * delta, axis=1), 1e-12)
+    errors = []
+    for gate in gates:
+        t = np.clip(np.sum((np.array(gate) - a) * delta, axis=1) / squared, 0, 1)
+        errors.append(float(np.linalg.norm(np.array(gate) - a - t[:, None] * delta, axis=1).min()))
+    return errors
+
 
 def cone_clearance(path, cones):
     a, b = path[:-1], path[1:]
@@ -71,12 +93,15 @@ def main():
                              figsize=(16, 3.5 * int(np.ceil(len(names) / 4))), squeeze=False)
     for name, ax in zip(names, axes.flat):
         cones, car = make_scenario(name)
-        path = np.array(PathPlanning(car, cones).generatePath())
+        planner = PathPlanning(car, cones)
+        path = np.array(planner.generatePath())
         steps = np.linalg.norm(np.diff(path, axis=0), axis=1)
         clearance = cone_clearance(path, cones)
         crossings = int(boundary_crossings(path, cones))
         max_turn, max_curvature = turn_metrics(path)
-        smooth = max_turn < 15.0 and max_curvature < 3.0
+        smooth = max_turn < 14.5 and max_curvature <= 2.5
+        errors = gate_errors(path, EXPECTED_GATES.get(name, planner.center_gates))
+        gates_passed = all(error <= 0.15 for error in errors)
         valid = bool(np.isfinite(path).all() and np.allclose(path[0], [car.x, car.y])
                      and 5.0 <= steps.sum() <= 10.0 and steps.max() <= 0.5 + 1e-9)
         row = {"scenario": name, "points": len(path), "length_m": float(steps.sum()),
@@ -84,14 +109,24 @@ def main():
                "observed_boundary_crossings": crossings, "output_contract_passed": valid,
                "max_heading_change_deg": max_turn,
                "estimated_peak_curvature_per_m": max_curvature,
+               "gate_errors_m": errors, "gate_checks_passed": gates_passed,
+               "inferred_cones": [{"x": c.x, "y": c.y, "color": c.color}
+                                  for c in planner.inferred_cones],
                "smoothness_checks_passed": smooth}
         rows.append(row)
         # Geometric checks accompany the output contract on all supplied cases.
-        if not valid or not smooth or (clearance is not None and clearance < 0.25 - 1e-8) or crossings:
+        if (not valid or not smooth or not gates_passed
+                or (clearance is not None and clearance < 0.45 - 1e-8) or crossings):
             failures.append(name)
         for color, face in ((0, "gold"), (1, "royalblue")):
             side = [c for c in cones if c.color == color]
             ax.scatter([c.x for c in side], [c.y for c in side], c=face, edgecolors="black", s=30)
+            inferred = [c for c in planner.inferred_cones if c.color == color]
+            ax.scatter([c.x for c in inferred], [c.y for c in inferred],
+                       facecolors="none", edgecolors=face, s=30)
+        from matplotlib.patches import Circle
+        for cone in cones:
+            ax.add_patch(Circle((cone.x, cone.y), 0.45, color="gray", alpha=0.12))
         ax.plot(path[:, 0], path[:, 1], color="green")
         ax.scatter([car.x], [car.y], color="red", s=25)
         ax.arrow(car.x, car.y, np.cos(car.yaw), np.sin(car.yaw), color="red", head_width=0.15)

@@ -6,314 +6,332 @@ from src.models import CarPose, Cone, Path2D
 
 
 class PathPlanning:
-    """Student-implemented path planner.
-
-    You are given the car pose and an array of detected cones, each cone with (x, y, color)
-    where color is 0 for yellow (right side) and 1 for blue (left side). The goal is to
-    generate a sequence of path points that the car should follow.
-
-    Implement ONLY the generatePath function.
-    """
+    """Plan a short centerline from colored cone boundaries."""
 
     def __init__(self, car_pose: CarPose, cones: List[Cone]):
         self.car_pose = car_pose
         self.cones = cones
+        self.inferred_cones: List[Cone] = []
+        self.center_gates: Path2D = []
 
     def generatePath(self) -> Path2D:
-        """Return a list of path points (x, y) in world frame.
+        """Return an 8–10 m path in world coordinates, sampled every 0.1 m.
 
-        Requirements and notes:
-        - Cones: color==0 (yellow) are on the RIGHT of the track; color==1 (blue) are on the LEFT.
-        - You may be given 2, 1, or 0 cones on each side.
-        - Use the car pose (x, y, yaw) to seed your path direction if needed.
-        - Return a drivable path that stays between left (blue) and right (yellow) cones.
-        - The returned path will be visualized by PathTester.
-
-        The path can contain as many points as you like, but it should be between 5-10 meters,
-        with a step size <= 0.5. Units are meters.
-
-        Use Delaunay gates and a directed graph; infer a 2 m wide track when
-        only one boundary is visible. See REPORT.md for assumptions and limits.
+        Blue marks the left edge and yellow the right. A missing edge is
+        inferred using observed cross-track offsets or a 2 m track width.
+        Raise ValueError if no candidate passes the geometric acceptance checks.
         """
-
         import math
-        from itertools import combinations
 
         import numpy as np
-        from scipy.interpolate import BSpline
-        from scipy.spatial import Delaunay, QhullError
+        from scipy.interpolate import make_interp_spline
+        from scipy.optimize import linear_sum_assignment, minimize
 
-        horizon, spacing = 8.0, 0.1
-        assumed_width, clearance = 2.0, 0.25
-        origin = np.array([self.car_pose.x, self.car_pose.y], dtype=float)
+        spacing, horizon, assumed_width = 0.1, 8.0, 2.0
+        self.inferred_cones = []
+        self.center_gates = []
+        origin = np.array((self.car_pose.x, self.car_pose.y), dtype=float)
         yaw = self.car_pose.yaw
         if not np.isfinite(origin).all() or not math.isfinite(yaw):
             raise ValueError("Car pose must contain finite coordinates and yaw")
-        rotation = np.array([[math.cos(yaw), -math.sin(yaw)],
-                             [math.sin(yaw), math.cos(yaw)]])
+        heading = np.array((math.cos(yaw), math.sin(yaw)))
 
-        def unit(vector, default=None):
+        def unit(vector, fallback):
             length = float(np.linalg.norm(vector))
-            if length > 1e-9:
-                return vector / length
-            return np.array([1.0, 0.0]) if default is None else default.copy()
+            return vector / length if length > 1e-9 else fallback.copy()
 
-        def left_normal(tangent):
-            return np.array([-tangent[1], tangent[0]])
-
-        def world_path(local):
-            return [tuple(map(float, point)) for point in local @ rotation.T + origin]
+        def left(vector):
+            return np.array((-vector[1], vector[0]))
 
         def straight():
-            return world_path(np.column_stack((np.arange(0.0, horizon + spacing / 2,
-                                                         spacing),
-                                               np.zeros(int(horizon / spacing) + 1))))
+            distances = np.arange(81) * spacing
+            return [tuple(map(float, point)) for point in origin + distances[:, None] * heading]
 
-        # Sort before deduplication so triangulation is independent of input order.
+        # Stable cleanup makes duplicates and input ordering immaterial.
         unique = {}
         for cone in sorted(self.cones, key=lambda c: (c.x, c.y, c.color)):
-            if cone.color not in (0, 1) or not np.isfinite([cone.x, cone.y]).all():
+            if cone.color not in (0, 1) or not np.isfinite((cone.x, cone.y)).all():
                 continue
-            point = (np.array([cone.x, cone.y]) - origin) @ rotation
-            key = tuple(np.round(point, 8))
-            if key in unique and unique[key][1] != cone.color:
-                unique[key] = (point, -1)  # contradictory detection: discard it
+            key = (round(float(cone.x), 8), round(float(cone.y), 8))
+            if key in unique and unique[key] != cone.color:
+                unique[key] = -1
             elif key not in unique:
-                unique[key] = (point, cone.color)
-        detected = [(p, color) for p, color in unique.values() if color >= 0]
-        if not detected:
+                unique[key] = cone.color
+        blue = np.array([p for p, color in unique.items() if color == 1], dtype=float).reshape(-1, 2)
+        yellow = np.array([p for p, color in unique.items() if color == 0], dtype=float).reshape(-1, 2)
+        if not len(blue) and not len(yellow):
             return straight()
-        points = np.array([p for p, _ in detected])
-        colors = np.array([color for _, color in detected])
-        real_points = points.copy()
 
-        # Fit a common longitudinal axis to within-side variation. Colors choose
-        # its sign when both sides exist; yaw chooses it for a single boundary.
+        # Estimate the travel axis from variation along each boundary.
         covariance = np.zeros((2, 2))
-        for color in (0, 1):
-            side = points[colors == color]
+        for side in (blue, yellow):
             if len(side) > 1:
                 centered = side - side.mean(axis=0)
                 covariance += centered.T @ centered
-        blue, yellow = points[colors == 1], points[colors == 0]
         if np.linalg.norm(covariance) > 1e-9:
-            _, eigenvectors = np.linalg.eigh(covariance)
-            direction = eigenvectors[:, -1]
+            _, vectors = np.linalg.eigh(covariance)
+            direction = vectors[:, -1]
         elif len(blue) and len(yellow):
             across = blue.mean(axis=0) - yellow.mean(axis=0)
-            direction = unit(np.array([across[1], -across[0]]))
+            direction = unit(np.array((across[1], -across[0])), heading)
         else:
-            direction = np.array([1.0, 0.0])
+            direction = heading.copy()
         if len(blue) and len(yellow):
-            if np.dot(left_normal(direction), blue.mean(axis=0) - yellow.mean(axis=0)) < 0:
+            across = blue.mean(axis=0) - yellow.mean(axis=0)
+            lateral = float(np.dot(left(direction), across))
+            if abs(lateral) < 0.25:
+                return straight()
+            if lateral < 0:
                 direction = -direction
-        elif direction[0] < -1e-9 or (abs(direction[0]) <= 1e-9
-                                     and np.dot(direction, points.mean(axis=0)) < 0):
-            direction = -direction
+        else:
+            side = blue if len(blue) else yellow
+            if np.dot(side.mean(axis=0) - origin, direction) < 0:
+                direction = -direction
 
-        # One visible boundary: offset along local normals to create virtual
-        # opposite cones. Three cones provide two segments and a bend tangent.
-        if not len(blue) or not len(yellow):
-            order = np.argsort(points @ direction, kind="stable")
-            points, colors = points[order], colors[order]
-            inferred = []
-            for i, point in enumerate(points):
-                tangent = unit(points[min(i + 1, len(points) - 1)]
-                               - points[max(i - 1, 0)], direction)
+        # Pair opposing observations at similar longitudinal stations. Create
+        # center targets from unmatched cones by offsetting their own boundary.
+        gates = []
+        paired_blue, paired_yellow, widths, across_pairs = set(), set(), [], []
+        if len(blue) and len(yellow):
+            bp = (blue - origin) @ direction
+            yp = (yellow - origin) @ direction
+            rows, cols = linear_sum_assignment(np.abs(bp[:, None] - yp[None, :]))
+            for bi, yi in zip(rows, cols):
+                across = blue[bi] - yellow[yi]
+                width = float(np.dot(across, left(direction)))
+                along = abs(float(np.dot(across, direction)))
+                if width < 0.5 or along > max(1.5, width):
+                    continue
+                gates.append((blue[bi] + yellow[yi]) / 2)
+                widths.append(width)
+                across_pairs.append(((blue[bi] + yellow[yi]) / 2, across))
+                paired_blue.add(int(bi))
+                paired_yellow.add(int(yi))
+        width = float(np.clip(np.median(widths) if widths else assumed_width, 0.8, 4.0))
+
+        def infer(side, color, paired):
+            if not len(side):
+                return
+            order = np.argsort((side - origin) @ direction, kind="stable")
+            ordered = side[order]
+            for place, index in enumerate(order):
+                if int(index) in paired:
+                    continue
+                before = ordered[max(0, place - 1)]
+                after = ordered[min(len(ordered) - 1, place + 1)]
+                tangent = unit(after - before, direction)
                 if np.dot(tangent, direction) < 0:
                     tangent = -tangent
-                sign = 1.0 if colors[i] == 0 else -1.0
-                inferred.append(point + sign * assumed_width * left_normal(tangent))
-            points = np.vstack((points, inferred))
-            colors = np.concatenate((colors, 1 - colors))
+                if across_pairs:
+                    # Reflect an unmatched observation using the nearest real
+                    # cross-track pair. This keeps an uneven detection count
+                    # from inventing a diagonal gate (e.g. a missing blue cone).
+                    _, across = min(across_pairs, key=lambda pair:
+                                    abs(float(np.dot(side[index] - pair[0], direction))))
+                else:
+                    across = width * left(tangent)
+                mirrored = side[index] + (-1 if color == 1 else 1) * across
+                self.inferred_cones.append(Cone(float(mirrored[0]), float(mirrored[1]), 1 - color))
+                gates.append((side[index] + mirrored) / 2)
 
-        gates, gate_ids, links = [], {}, set()
-
-        def add_gate(a, b):
-            if colors[a] == colors[b]:
-                return None
-            edge = tuple(sorted((int(a), int(b))))
-            b_idx, y_idx = (a, b) if colors[a] == 1 else (b, a)
-            across = points[b_idx] - points[y_idx]
-            width = float(np.dot(across, left_normal(direction)))
-            # Reject reversed, vanishing and overly longitudinal cross-track edges.
-            if width < 2 * clearance or abs(float(np.dot(across, direction))) > 2 * width:
-                return None
-            if edge not in gate_ids:
-                gate_ids[edge] = len(gates)
-                gates.append((points[a] + points[b]) / 2)
-            return gate_ids[edge]
-
-        triangles = []
-        if len(points) >= 3:
-            try:
-                triangles = Delaunay(points).simplices
-            except QhullError:
-                # No random jitter: collinear geometry remains collinear.
-                pass
-        for triangle in triangles:
-            ids = [add_gate(a, b) for a, b in combinations(triangle, 2)]
-            ids = [idx for idx in ids if idx is not None]
-            for a, b in combinations(ids, 2):
-                links.add(tuple(sorted((a, b))))
-        if not gates:
-            # Two cones / degenerate triangulation: ordered compatible gates.
-            for a, b in combinations(range(len(points)), 2):
-                add_gate(a, b)
-            if gates:
-                order = sorted(range(len(gates)), key=lambda i: float(np.dot(gates[i], direction)))
-                links.update(tuple(sorted((a, b))) for a, b in zip(order, order[1:]))
+        infer(blue, 1, paired_blue)
+        infer(yellow, 0, paired_yellow)
         if not gates:
             return straight()
         gates = np.array(gates)
-
-        # Each mixed triangle connects the midpoints of its two color-changing
-        # edges. Direct those links along the fitted track axis to form a DAG.
-        adjacency = [[] for _ in gates]
-        for a, b in sorted(links):
-            progress = float(np.dot(gates[b] - gates[a], direction))
-            if abs(progress) < 1e-8:
-                continue
-            if progress < 0:
-                a, b = b, a
-            adjacency[a].append(b)
-        starts = [i for i, p in enumerate(gates) if p[0] >= -0.5]
-        if not starts:
+        gates = gates[np.argsort((gates - origin) @ direction, kind="stable")]
+        if max(np.dot(gates[-1] - origin, direction),
+               np.dot(gates[-1] - origin, heading)) < 0.2:
             return straight()
-        # Enter near the car rather than skipping directly to the farthest gate.
-        start = min(starts, key=lambda i: (float(np.linalg.norm(gates[i]))
-                                          + max(0.0, -float(gates[i][0])), i))
-        order = sorted(range(len(gates)), key=lambda i: (float(np.dot(gates[i], direction)), i))
-        # State includes the previous gate: turn cost depends on incoming heading.
-        states = {(-1, start): (float(np.linalg.norm(gates[start])), [start])}
-        for current in order:
-            incoming_states = [(key, value) for key, value in states.items() if key[1] == current]
-            for (previous, _), (cost, route) in incoming_states:
-                incoming = unit(gates[current] if previous < 0 else gates[current] - gates[previous])
-                for nxt in adjacency[current]:
-                    outgoing = unit(gates[nxt] - gates[current])
-                    turn_cost = 2.0 * (1.0 - float(np.clip(np.dot(incoming, outgoing), -1, 1)))
-                    candidate = cost + float(np.linalg.norm(gates[nxt] - gates[current])) + turn_cost
-                    key = (current, nxt)
-                    if key not in states or candidate < states[key][0]:
-                        states[key] = (candidate, route + [nxt])
-        # Reach the furthest connected gate, then choose the least-cost route.
-        _, route = min(states.values(), key=lambda value: (
-            -float(np.dot(gates[value[1][-1]] - gates[start], direction)), value[0], value[1]))
-        anchors = [np.zeros(2)]
-        for idx in route:
-            if np.linalg.norm(gates[idx] - anchors[-1]) > 1e-6:
-                anchors.append(gates[idx])
-        if len(anchors) == 1:
-            anchors.append(direction * horizon)
-        # Extrapolate linearly, not with an unbounded cubic polynomial.
-        final_direction = unit(anchors[-1] - anchors[-2], direction) if len(route) > 1 else direction
-        anchors.append(anchors[-1] + horizon * final_direction)
-        anchors = np.array(anchors)
+        self.center_gates = [tuple(map(float, gate)) for gate in gates]
+        last_gate = gates[-1]
+        final_direction = direction
+        if len(gates) > 1:
+            candidate = unit(gates[-1] - gates[-2], direction)
+            if np.dot(candidate, direction) >= 0.25:
+                final_direction = candidate
+        # A target behind the current heading needs room for a forward turn.
+        # The assignment permits up to 10 m of path in that geometry.
+        if np.dot(last_gate - origin, heading) < 0:
+            horizon = 10.0
+        target = last_gate + 2.0 * final_direction
 
-        # Checks apply to the visible/inferred boundary segments, not a claimed
-        # vehicle footprint. An already-outside car may enter the corridor.
+        # Compete several smooth curve families under the same geometric cost.
+        # The spline can pass exactly through gates; an approach knot gives it
+        # room to enter a narrow first gate from outside the visible boundary.
+        cones = np.vstack((blue, yellow))
+        dense_t = np.linspace(0.0, 1.0, 321)
+        basis = np.array([math.comb(5, i) * (1 - dense_t) ** (5 - i) * dense_t ** i
+                          for i in range(6)]).T
+        margin = 0.46
+        curvature_limit = 1.25
         boundary_segments = []
-        for color in (0, 1):
-            side = points[colors == color]
-            side = side[np.argsort(side @ direction, kind="stable")]
-            boundary_segments.extend(zip(side[:-1], side[1:]))
+        for side in (blue, yellow):
+            if len(side) > 1:
+                ordered = side[np.argsort((side - origin) @ direction, kind="stable")]
+                boundary_segments.extend(zip(ordered[:-1], ordered[1:]))
 
-        def acceptable(curve):
+        def bezier(handles):
+            # Collinear endpoint controls give zero endpoint curvature, so
+            # appending the straight continuation does not change steering
+            # suddenly. This is a quintic, not a chain of short cubic pieces.
+            controls = np.array((origin, origin + handles[0] * heading,
+                                 origin + 2 * handles[0] * heading,
+                                 target - 2 * handles[1] * final_direction,
+                                 target - handles[1] * final_direction, target))
+            return basis @ controls
+
+        def sampled_path(curve):
             if not np.isfinite(curve).all():
-                return False
-            a, b = curve[:-1], curve[1:]
+                return None
+            lengths = np.linalg.norm(np.diff(curve, axis=0), axis=1)
+            if lengths.min() < 1e-9:
+                return None
+            cumulative = np.concatenate(([0.0], np.cumsum(lengths)))
+            if cumulative[-1] < horizon:
+                extension = horizon - cumulative[-1] + spacing
+                tail = target + np.arange(1, int(math.ceil(extension / spacing)) + 1)[:, None] * spacing * final_direction
+                curve = np.vstack((curve, tail))
+                cumulative = np.concatenate((cumulative, cumulative[-1]
+                                             + spacing * np.arange(1, len(tail) + 1)))
+            samples = np.arange(int(round(horizon / spacing)) + 1) * spacing
+            path = np.column_stack((np.interp(samples, cumulative, curve[:, 0]),
+                                    np.interp(samples, cumulative, curve[:, 1])))
+            return path
+
+        def curve_cost(curve, require_feasible=False):
+            path = sampled_path(curve)
+            if path is None:
+                return 1e8
+            score = 0.0
+            feasible = True
+            a, b = path[:-1], path[1:]
             delta = b - a
-            squared_lengths = np.maximum(np.sum(delta * delta, axis=1), 1e-12)
-            for cone in real_points:
-                t = np.clip(np.sum((cone - a) * delta, axis=1) / squared_lengths, 0, 1)
-                if np.min(np.linalg.norm(cone - (a + t[:, None] * delta), axis=1)) < clearance - 1e-8:
-                    return False
+            delta_sq = np.maximum(np.sum(delta * delta, axis=1), 1e-12)
+            for gate in gates:
+                distance = float(np.linalg.norm(path - gate, axis=1).min())
+                feasible &= distance <= 0.15
+                score += 1e6 * max(0.0, distance - 0.08) ** 2
+            for cone in cones:
+                projection = np.clip(np.sum((cone - a) * delta, axis=1) / delta_sq, 0, 1)
+                distance = float(np.linalg.norm(cone - (a + projection[:, None] * delta), axis=1).min())
+                feasible &= distance >= 0.45
+                score += 1e6 * max(0.0, margin - distance) ** 2
+            # A boundary crossing is a route failure, not a minor smoothing
+            # preference. Check the actual segments the tester will draw.
             for c, d in boundary_segments:
-                ca, da = c - a, d - a
-                ab_c = delta[:, 0] * ca[:, 1] - delta[:, 1] * ca[:, 0]
-                ab_d = delta[:, 0] * da[:, 1] - delta[:, 1] * da[:, 0]
+                ab_c = delta[:, 0] * (c[1] - a[:, 1]) - delta[:, 1] * (c[0] - a[:, 0])
+                ab_d = delta[:, 0] * (d[1] - a[:, 1]) - delta[:, 1] * (d[0] - a[:, 0])
                 cd_a = (d[0] - c[0]) * (a[:, 1] - c[1]) - (d[1] - c[1]) * (a[:, 0] - c[0])
                 cd_b = (d[0] - c[0]) * (b[:, 1] - c[1]) - (d[1] - c[1]) * (b[:, 0] - c[0])
-                if np.any((ab_c * ab_d < -1e-10) & (cd_a * cd_b < -1e-10)):
-                    return False
-            return True
+                crossings = np.count_nonzero((ab_c * ab_d < -1e-10)
+                                            & (cd_a * cd_b < -1e-10))
+                feasible &= crossings == 0
+                score += 1e6 * crossings
+            speed = np.linalg.norm(delta, axis=1)
+            directions = delta / np.maximum(speed[:, None], 1e-12)
+            turns = np.arccos(np.clip(np.sum(directions[:-1] * directions[1:], axis=1), -1, 1))
+            curvature = turns / np.maximum((speed[:-1] + speed[1:]) / 2, 1e-12)
+            score += float(np.mean(curvature ** 2))
+            score += 10000.0 * max(0.0, float(curvature.max()) - curvature_limit) ** 2
+            score += 25.0 * max(0.0, float(np.linalg.norm(np.diff(curve, axis=0), axis=1).sum())
+                                 - horizon + 0.1) ** 2
+            backtracking = np.maximum(0.0, -(delta @ direction)).sum()
+            score += 5.0 * backtracking ** 2
+            turning = delta[:-1, 0] * delta[1:, 1] - delta[:-1, 1] * delta[1:, 0]
+            signed_turns = np.sign(turning) * turns
+            reversal = min(np.maximum(signed_turns - 0.002, 0).sum(),
+                           np.maximum(-signed_turns - 0.002, 0).sum())
+            score += 100.0 * reversal ** 2
+            initial_error = math.acos(float(np.clip(directions[0] @ heading, -1, 1)))
+            feasible &= initial_error <= 0.15 and float(curvature.max()) <= 2.5
+            score += 1e6 * max(0.0, initial_error - 0.05) ** 2
+            # Dense geometry catches a cusp that uniform 0.1 m output samples
+            # could skip. Sampling more finely must not hide a tight turn.
+            dense_delta = np.diff(curve, axis=0)
+            dense_speed = np.linalg.norm(dense_delta, axis=1)
+            dense_unit = dense_delta / np.maximum(dense_speed[:, None], 1e-12)
+            dense_angles = np.arccos(np.clip(np.sum(dense_unit[:-1] * dense_unit[1:], axis=1), -1, 1))
+            dense_curvature = dense_angles / np.maximum((dense_speed[:-1] + dense_speed[1:]) / 2, 1e-12)
+            feasible &= float(dense_curvature.max()) <= 2.5
+            score += 10000.0 * max(0.0, float(dense_curvature.max()) - curvature_limit) ** 2
+            if require_feasible and not feasible:
+                return math.inf
+            return float(score)
 
-        def resample(curve):
-            lengths = np.linalg.norm(np.diff(curve, axis=0), axis=1)
-            cumulative = np.concatenate(([0.0], np.cumsum(lengths)))
-            keep = np.concatenate(([True], lengths > 1e-10))
-            curve, cumulative = curve[keep], cumulative[keep]
-            distance = min(horizon, float(cumulative[-1]))
-            targets = np.linspace(0.0, distance, int(math.ceil(distance / spacing)) + 1)
-            return np.column_stack([np.interp(targets, cumulative, curve[:, axis]) for axis in (0, 1)])
-
-        # Approximate the gate route with a clamped cubic B-spline. Gate
-        # midpoints are controls, not mandatory interpolation knots; simple
-        # interior knots keep the curve C2 and avoid rapid tangent changes.
+        distance = float(np.linalg.norm(target - origin))
+        limit = max(1.0, min(6.0, distance + 2.0))
+        bounds = ((0.12, limit), (0.12, limit))
         candidates = []
-        first_distance = float(np.linalg.norm(anchors[1]))
-        entry_direction = unit(anchors[2] - anchors[1], final_direction)
 
-        def consider(handle, approach=0.0, offset=0.0, broad_exit=False, guide_direction=None):
-            controls = [anchors[0], np.array([min(handle, first_distance * 0.8), 0.0])]
-            if approach:
-                guide = entry_direction if guide_direction is None else guide_direction
-                controls.append(anchors[1] - approach * guide)
-            controls.extend(anchors[1:-1])
-            controls.append(anchors[-2] + handle * final_direction
-                            + offset * left_normal(final_direction))
-            if broad_exit:
-                # Extra exit controls give a reversal room to bend instead of
-                # collapsing into a near-zero tangent at the last gate.
-                controls.append(anchors[-2] + 2 * handle * final_direction
-                                + offset * left_normal(final_direction))
-                controls.append(anchors[-1] - 0.5 * final_direction)
-            controls.append(anchors[-1])
-            controls = np.array(controls)
-            chord = np.linalg.norm(np.diff(controls, axis=0), axis=1)
-            control_parameters = np.concatenate(([0.0], np.cumsum(chord)))
-            interior = [np.mean(control_parameters[i:i + 3])
-                        for i in range(1, len(controls) - 3)]
-            if len(interior) > 1 and np.any(np.diff(interior) <= 1e-9):
-                return  # keep interior knots simple for C2 continuity
-            knots = np.concatenate((np.zeros(4), interior,
-                                    np.full(4, control_parameters[-1])))
-            spline = BSpline(knots, controls, 3)
-            dense_parameters = np.linspace(0.0, control_parameters[-1],
-                                           max(400, int(control_parameters[-1] / 0.015)))
-            curve = spline(dense_parameters)
-            sampled = resample(curve)
-            if not acceptable(sampled):
-                return
-            velocity = spline(dense_parameters, 1)
-            acceleration = spline(dense_parameters, 2)
-            speed = np.linalg.norm(velocity, axis=1)
-            if speed.min() < 1e-5:
-                return  # a vanishing tangent can create a cusp
-            curvature = np.abs(velocity[:, 0] * acceleration[:, 1]
-                               - velocity[:, 1] * acceleration[:, 0]) / speed**3
-            candidates.append((float(curvature.max()), sampled))
+        def fit(builder, seeds, search_bounds=bounds):
+            seeds = [tuple(np.clip(seed, np.array(search_bounds)[:, 0],
+                                   np.array(search_bounds)[:, 1])) for seed in seeds]
+            ranked = sorted(((curve_cost(builder(seed)), seed) for seed in seeds),
+                            key=lambda item: item[0])
+            for _, seed in ranked[:2]:
+                result = minimize(lambda values: curve_cost(builder(values)), seed,
+                                  method="Powell", bounds=search_bounds,
+                                  options={"maxiter": 65, "xtol": 2e-3, "ftol": 1e-3})
+                candidates.extend((builder(seed), builder(result.x)))
 
-        for handle in (0.5, 1.0, 1.5, 2.0):
-            consider(handle)
-        if not candidates or min(item[0] for item in candidates) > 1.0:
-            # A bounded search adjusts entry/exit controls for difficult poses.
-            # Every candidate still passes cone and boundary checks.
-            reversal = np.dot(unit(anchors[-2] - anchors[-3]), final_direction) < 0
-            offsets = (0.0, -0.75, 0.75, -1.5, 1.5) if reversal else (0.0,)
-            guides = [entry_direction]
-            if np.dot(entry_direction, final_direction) < 0.999:
-                guides.append(final_direction)
-            for handle in (0.5, 1.5, 3.0):
-                for approach in (0.0, 0.75, 1.5):
-                    for offset in offsets:
-                        for guide in guides if approach else guides[:1]:
-                            consider(handle, approach, offset, broad_exit=True,
-                                     guide_direction=guide)
-        if candidates:
-            return world_path(min(candidates, key=lambda item: item[0])[1])
-        # No checked smooth connection was found. Keep the heading fallback
-        # smooth; the interface has no failure/stop status and this cannot
-        # guarantee a clear route through an unknown or inconsistent scene.
-        return straight()
+        fit(bezier, [(a, b) for a in (0.5, 1.5, 3.0, 5.0)
+                     for b in (0.5, 1.5, 3.0, 5.0)])
+
+        def spline_builder(nodes, degree=5):
+            chord = np.linalg.norm(np.diff(nodes, axis=0), axis=1)
+            knots = np.concatenate(([0.0], np.cumsum(chord)))
+            def build(handles):
+                parameters = knots / knots[-1]
+                start = [(1, degree * handles[0] * heading)]
+                if degree == 5:
+                    start.append((2, np.zeros(2)))
+                spline = make_interp_spline(parameters, nodes, k=degree, axis=0,
+                                            bc_type=(start,
+                                                     [(1, degree * handles[1] * final_direction),
+                                                      (2, np.zeros(2))]))
+                return spline(dense_t)
+            return build
+
+        seeds = [(a, b) for a in (0.3, 0.75, 1.5, 3.0)
+                 for b in (0.3, 0.75, 1.5, 3.0)]
+        if len(gates):
+            nodes = np.vstack((origin, gates, target))
+            if np.min(np.linalg.norm(np.diff(nodes, axis=0), axis=1)) > 1e-6:
+                for degree in (4, 5):
+                    fit(spline_builder(nodes, degree), seeds)
+        progress = float(np.dot(gates[0] - origin, direction))
+        if progress > 0.2:
+            for approach in (0.5, 1.0, 1.5, 2.0):
+                entry = gates[0] - approach * direction
+                nodes = np.vstack((origin, entry, gates, target))
+                if np.min(np.linalg.norm(np.diff(nodes, axis=0), axis=1)) > 1e-6:
+                    for degree in (4, 5):
+                        fit(spline_builder(nodes, degree), seeds)
+
+        first_direction = unit(gates[0] - origin, heading)
+        if np.dot(first_direction, heading) < math.cos(1.0):
+            def free_bezier(values):
+                controls = np.array((origin, origin + values[0] * heading,
+                                     origin + values[2] * direction + values[3] * left(direction),
+                                     target - 2 * values[1] * final_direction,
+                                     target - values[1] * final_direction, target))
+                return basis @ controls
+            free_seeds = [(a, b, float(2 * a * heading @ direction),
+                           float(2 * a * heading @ left(direction)))
+                          for a in (0.5, 1.5, 3.0) for b in (0.5, 1.5, 3.0)]
+            fit(free_bezier, free_seeds, (*bounds, (-limit, limit), (-limit, limit)))
+            for departure in (0.5, 1.0, 1.5):
+                for approach in (0.0, 1.0):
+                    nodes = [origin, origin + departure * heading]
+                    if approach:
+                        nodes.append(gates[0] - approach * direction)
+                    nodes = np.vstack((*nodes, gates, target))
+                    if np.min(np.linalg.norm(np.diff(nodes, axis=0), axis=1)) > 1e-6:
+                        fit(spline_builder(nodes), seeds)
+
+        curve = min(candidates, key=lambda candidate: curve_cost(candidate, require_feasible=True))
+        if not math.isfinite(curve_cost(curve, require_feasible=True)):
+            raise ValueError(f"No cone-clear, smooth candidate fits the {horizon:g} m planning horizon")
+        path = sampled_path(curve)
+        return [tuple(map(float, point)) for point in path]

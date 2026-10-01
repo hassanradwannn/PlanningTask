@@ -2,19 +2,24 @@
 import math
 import random
 import unittest
-from unittest.mock import patch
 
 import numpy as np
-from scipy.spatial import Delaunay, QhullError
 
+from scripts.validate_paths import EXPECTED_GATES, boundary_crossings, cone_clearance, gate_errors, turn_metrics
 from src.models import CarPose, Cone
 from src.path_planning import PathPlanning
 from src.scenarios import get_scenario_names, make_scenario
 
 
 class PathPlanningTests(unittest.TestCase):
+    _plans = {}
+
     def plan(self, cones, car=None):
-        return np.array(PathPlanning(car or CarPose(0.0, 0.0, 0.0), cones).generatePath())
+        car = car or CarPose(0.0, 0.0, 0.0)
+        key = (car.x, car.y, car.yaw, tuple((c.x, c.y, c.color) for c in cones))
+        if key not in self._plans:
+            self._plans[key] = np.array(PathPlanning(car, cones).generatePath())
+        return self._plans[key].copy()
 
     def assert_contract(self, path, car):
         self.assertEqual(path.shape[1], 2)
@@ -103,19 +108,51 @@ class PathPlanningTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.plan([], car)
 
-    def test_three_cone_case_actually_calls_delaunay(self):
-        cones, car = make_scenario("23")
-        with patch("scipy.spatial.Delaunay", wraps=Delaunay) as triangulate:
-            self.plan(cones, car)
-        self.assertEqual(triangulate.call_count, 1)
-        self.assertEqual(triangulate.call_args.args[0].shape, (6, 2))
+    def test_reported_problem_cases_clear_cones_and_boundaries(self):
+        for name in ("2", "3", "5", "6", "8", "10", "11", "14", "15", "19", "26"):
+            with self.subTest(scenario=name):
+                cones, car = make_scenario(name)
+                path = self.plan(cones, car)
+                self.assertGreaterEqual(cone_clearance(path, cones), 0.45 - 1e-8)
+                self.assertEqual(boundary_crossings(path, cones), 0)
+                turn, curvature = turn_metrics(path)
+                self.assertLess(turn, 14.5)
+                self.assertLessEqual(curvature, 2.5)
+                self.assertTrue(all(error <= 0.15 for error in gate_errors(path, EXPECTED_GATES[name])))
 
-    def test_qhull_failure_has_deterministic_fallback(self):
-        cones, car = make_scenario("21")
-        with patch("scipy.spatial.Delaunay", side_effect=QhullError("degenerate geometry")):
-            path = self.plan(cones, car)
-        self.assert_contract(path, car)
-        np.testing.assert_allclose(path[:, 1], 0.0, atol=1e-9)
+    def test_single_side_routes_choose_the_inside_of_the_boundary(self):
+        for name, expected_sign in (("5", 1), ("8", -1)):
+            with self.subTest(scenario=name):
+                cones, car = make_scenario(name)
+                path = self.plan(cones, car)
+                boundary_y = cones[0].y
+                near_cones = path[(path[:, 0] >= min(c.x for c in cones))
+                                  & (path[:, 0] <= max(c.x for c in cones))]
+                self.assertGreater(len(near_cones), 5, "Route must actually reach the cone stations")
+                self.assertTrue((expected_sign * (near_cones[:, 1] - boundary_y) > 0.45).all())
+                self.assertLess(float(np.ptp(near_cones[:, 1])), 0.06)
+
+    def test_missing_blue_is_reflected_to_continue_straight_corridor(self):
+        cones, car = make_scenario("6")
+        planner = PathPlanning(car, cones)
+        path = np.array(planner.generatePath())
+        self.assertEqual([(c.x, c.y, c.color) for c in planner.inferred_cones], [(3.0, 4.0, 1)])
+        near = path[(path[:, 0] >= 3.0) & (path[:, 0] <= 4.0)]
+        self.assertGreater(len(near), 5)
+        np.testing.assert_allclose(near[:, 1], 3.0, atol=0.08)
+
+    def test_bends_do_not_oscillate_between_left_and_right_turns(self):
+        for name, turn_sign in (("19", -1), ("26", 1)):
+            with self.subTest(scenario=name):
+                cones, car = make_scenario(name)
+                headings = np.unwrap(np.arctan2(*np.diff(self.plan(cones, car), axis=0).T[::-1]))
+                turns = turn_sign * np.diff(headings)
+                # Ignore less than 0.2 degrees of numerical/endpoint drift.
+                self.assertLess(float(np.maximum(-turns - np.deg2rad(0.2), 0).sum()), 0.02)
+
+    def test_infeasible_narrow_gate_is_reported_instead_of_returning_collision(self):
+        with self.assertRaisesRegex(ValueError, "No cone-clear"):
+            self.plan([Cone(3.0, 0.3, 1), Cone(3.0, -0.3, 0)])
 
     def test_all_scenarios_have_no_abrupt_heading_jumps(self):
         for name in get_scenario_names():
@@ -126,10 +163,10 @@ class PathPlanningTests(unittest.TestCase):
                 steps = np.linalg.norm(delta, axis=1)
                 headings = delta / steps[:, None]
                 turns = np.arccos(np.clip(np.sum(headings[:-1] * headings[1:], axis=1), -1, 1))
-                self.assertLess(float(np.rad2deg(turns.max())), 15.0)
+                self.assertLess(float(np.rad2deg(turns.max())), 14.5)
                 # Guard against hiding a tight turn merely by adding samples.
                 curvature = turns / ((steps[:-1] + steps[1:]) / 2)
-                self.assertLess(float(curvature.max()), 3.0)
+                self.assertLessEqual(float(curvature.max()), 2.5)
                 initial = np.array([math.cos(car.yaw), math.sin(car.yaw)])
                 self.assertGreater(float(np.dot(headings[0], initial)), math.cos(0.15))
 

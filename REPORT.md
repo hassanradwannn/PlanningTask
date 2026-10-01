@@ -1,371 +1,134 @@
-# Delaunay graph path planning report
+# Cone path planning report
 
-## What we implemented
+## Task and deliverables
 
-We replaced the straight-line placeholder in `PathPlanning.generatePath()` with
-a local planner based on **Delaunay triangulation and graph search**. It accepts
-the existing `CarPose` and `Cone` objects and returns a `Path2D` list of world
-coordinate tuples. Blue cones represent the left boundary and yellow cones the
-right boundary.
+The planner returns world-coordinate `(x, y)` points starting at the car pose. Blue cones mark the left boundary, yellow cones the right. Paths cover approximately 8 m, or 10 m when the car initially faces away from the corridor, with point spacing at most 0.1 m.
 
-The implementation covers both assignment parts: the original sparse inputs
-and three cones on one side. It retains the original 20 scenarios and adds 12
-cases, automated tests, reproducible numerical validation, and plots. Only
-`generatePath()` was changed in the planner class; its constructor and public
-interface remain compatible with the supplied tester.
+The submission includes:
 
-The returned path starts at the car and targets an **8 m horizon**, sampled at
-**0.1 m intervals**. Measured polyline lengths are slightly below 8 m on curves
-because chords are shorter than the sampled curve's approximate arc length.
+1. `src/path_planning.py`: the planner for zero, one, two, and three cones per side.
+2. `src/scenarios.py`: the original 20 cases, unchanged, plus 12 cases for three-cone sides, curves, missing observations, translated poses, and degenerate inputs.
+3. `src/tester.py` and `src/run.py`: individual, gallery, and sequential visualization.
+4. `tests/`: behavioral and viewer tests.
+5. `scripts/validate_paths.py`: independent geometry checks and saved plots/results.
+6. This report and `README.md`: how to run, what changed, why, and limitations.
 
-## Why we chose this approach
+## What changed after the reported failures
 
-The selected algorithm creates candidate passages between cones rather than
-requiring a fixed one-to-one pairing of the two boundaries. A triangulation
-provides local connectivity, and a graph makes alternative routes explicit.
-Cone colors reject edges that do not represent plausible cross-track gates.
+| Scenarios | Correction |
+|---|---|
+| 2, 3, 10, 11, 15 | Check distance from every returned path segment to cone centers, reject collisions and boundary crossings, and require passage near the center gates. |
+| 5 | Infer blue cones above the yellow boundary; enter the corridor smoothly and continue straight at `y = 3`. |
+| 6 | Reflect the unmatched yellow cone `(3, 2)` using the observed cross-track vector `(0, 2)`. Its missing blue partner is `(3, 4)`, producing the center gate `(3, 3)`. |
+| 8 | Infer yellow cones below the blue boundary; continue at `y = 2`. |
+| 14 | Allow a 10 m approach from the original yaw and require reaching the gates `(3, 3.5)` and `(5, 3.5)`. Clearance without reaching the track no longer counts as success. |
+| 19 | Penalize unnecessary changes between left and right turning and test that the right-turning route does not oscillate. |
+| 26 | Reflect the missing yellow cone to `(6, 0.4)`, use the resulting gate `(6, 1.4)`, and test a continuous left bend. |
 
-This gives a foundation for adding more cones, while small inputs still
-require special handling. Delaunay triangulation alone does not define a
-route, starting direction, opposite boundary, or safe vehicle motion. We
-supply those decisions separately.
-
-SciPy provides triangulation and `QhullError` handling for degenerate geometry,
-so we use its existing implementation rather than implementing numerical
-triangulation ourselves.
-[SciPy Delaunay documentation](https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.Delaunay.html)
+The viewer now draws inferred cones as hollow markers. Gray discs show the 0.45 m cone-center clearance used for acceptance. These discs are a geometric margin, not a measured car footprint.
 
 ## How the planner works
 
-```mermaid
-flowchart TD
-    A[Car pose and detected cones] --> B[Car frame, cleanup, track direction]
-    B --> C[Infer opposite cones if one side is absent]
-    C --> D[Delaunay triangulation]
-    D --> E[Cross-color edge midpoints]
-    D -->|Degenerate input| F[Direct compatible gates]
-    F --> E
-    E --> G[Directed midpoint graph and route search]
-    G --> H[C2 B-spline smoothing and geometric checks]
-    H --> I[8 m route sampled in world coordinates]
-```
+### 1. Clean observations and estimate track direction
 
-### 1. Work in the car's coordinate frame
+Invalid coordinates/colors are discarded. Duplicate positions are merged; conflicting colors at one position are discarded. Variation within the observed boundaries gives the longitudinal track axis. With both colors, the axis is oriented so blue is on the left. For a single side, it points toward the observed cones. Initial path direction still comes from the car's yaw.
 
-We translate every cone by the car position, then rotate by negative yaw.
-Positive x is the initial forward direction and positive y is the car's left.
-We convert final points back to world coordinates using the inverse transform.
+This separates track direction from car heading: a car looking toward a boundary does not reverse the meaning of blue and yellow.
 
-This simplifies the heading constraint and handles translated and rotated
-tracks. Nonfinite cone positions and unknown colors are discarded. Positions
-are deduplicated to eight decimal places in the local frame; conflicting
-colors at one position are discarded. A nonfinite car pose raises `ValueError`
-because a world-coordinate route cannot be defined.
+### 2. Pair cones and mirror missing partners
 
-### 2. Estimate track direction
+Minimum-cost assignment pairs opposite colors at similar longitudinal positions. Each accepted pair defines a midpoint gate and an observed cross-track vector.
 
-For sides with multiple cones, we accumulate their within-side position
-covariance and take its dominant eigenvector. Centering each side separately
-helps estimate longitudinal direction without mistaking width for length.
+For an unmatched cone, the nearest observed pair supplies the reflection vector. If no pair exists, the local boundary tangent supplies an inward normal and the assumed track width is 2 m. Neighboring tangents allow three cones on one side to describe a bend.
 
-With both colors present, we orient the vector so blue is on its left and
-yellow on its right. With only one blue-yellow pair, the perpendicular to the
-pair supplies direction. With one visible side, we select the axis direction
-closest to car yaw; a perpendicular tie is resolved toward the cone group.
-A single cone uses the car heading.
-
-This is a local ordering assumption for gentle bends, not a model of a
-complete loop or hairpin track.
-
-### 3. Supply a missing boundary
-
-When all visible cones have one color, we assume a **2 m track width** and
-create virtual cones on the other side. We sort the visible side along the
-estimated direction. At each cone, its tangent comes from neighboring
-positions: an endpoint uses its adjacent segment and an interior cone uses
-the vector between its two neighbors.
-
-For unit tangent `t = (tx, ty)`, the left normal is `n = (-ty, tx)`.
-
-- From yellow, the virtual blue cone is `yellow + 2*n`.
-- From blue, the virtual yellow cone is `blue - 2*n`.
-
-The gate midpoint lies approximately 1 m inward from the visible cone.
-Virtual cones represent an assumption, not additional detections. With both
-colors present, we use real cones even when their counts differ; observed
-track width is not forced to 2 m.
-
-### 4. Triangulate and build gates
-
-We call `scipy.spatial.Delaunay` on real and, when needed, virtual cones.
-Each triangle is examined for edges joining different colors. A compatible
-blue-yellow edge is a gate; its midpoint is a graph node. An edge shared by
-two triangles produces one node.
-
-We reject a gate if its projected width is below **0.5 m**, its colors are
-reversed relative to the fitted direction, or its longitudinal separation is
-more than twice its projected width. These geometric heuristics reduce
-implausible pairings; they are not learned parameters.
-
-Within each mixed-color triangle, we connect its compatible gate midpoints.
-These connections pass through triangle interiors before smoothing. Links
-are directed along increasing projection onto the fitted axis; links with
-essentially zero progress are discarded. The result is a directed acyclic graph.
-
-### 5. Search the graph
-
-The entry is the nearest eligible gate. Eligible entries lie no more than
-0.5 m behind the car in its initial forward frame. If none exists, we return
-the straight heading fallback.
-
-Search uses dynamic programming in increasing track projection. A state
-stores the previous and current gate because turn cost depends on incoming
-direction. For a transition to another gate:
+In scenario 6:
 
 ```text
-transition cost = distance + 2 * (1 - dot(incoming_unit, outgoing_unit))
+observed blue (4, 4) - observed yellow (4, 2) = (0, 2)
+missing blue = unmatched yellow (3, 2) + (0, 2) = (3, 4)
+center = ((3, 2) + (3, 4)) / 2 = (3, 3)
 ```
 
-The turn term favors smaller direction changes. Entry cost is the distance
-from car to entry gate; its first incoming direction is the car-to-gate
-vector. Continuous smoothing supplies the actual initial yaw.
+### 3. Fit continuous curves through the corridor
 
-We first choose the furthest reachable gate along the axis, then choose the
-least-cost route reaching it. The input supplies no destination; this rule
-seeks useful connected progress and prevents a zero-length route from winning
-simply because it has the lowest cost.
+The search compares quintic Bézier curves and degree-four/five interpolating splines. Endpoint handles control initial and terminal tangents. Geometry-derived approach/departure knots give a turn more room when the car is poorly aligned with the first gate. A free intermediate Bézier control point provides another candidate for those difficult approaches.
 
-### 6. Smooth and sample
+The endpoint lies 2 m beyond the last gate. This lets the curve pass through that gate without having to finish turning exactly there. The curve ends with zero curvature; any straight continuation therefore joins without a sudden steering change. Spline pieces also have continuous derivatives at their internal knots. There are no manually drawn scenario-specific paths.
 
-The car position, midpoint route, and an endpoint extended along the final
-track direction define the smoothing geometry. A **parametric cubic B-spline**
-uses the gate midpoints as control points rather than forcing interpolation
-through each midpoint. This lets the curve blend turns instead of accumulating
-small wiggles at closely spaced gates. We use SciPy's spline evaluation and
-derivatives. [SciPy B-spline documentation](https://docs.scipy.org/doc/scipy/reference/generated/scipy.interpolate.BSpline.html)
+The dense curve is sampled at 321 parameter values and resampled at approximately equal 0.1 m arc-length intervals for output.
 
-Endpoint knots are clamped. The second control point lies along the initial
-car heading, so the initial derivative has the correct direction. Interior
-knots are simple and spaced using averages of cumulative control-polygon
-distance. The underlying curve is C2: position, first derivative, and second
-derivative remain continuous through its interior knots. We reject candidates
-with effectively zero derivative speed, since a vanishing tangent can create
-a geometric cusp even in a differentiable parameterization.
+### 4. Optimize, then reject invalid candidates
 
-We first try heading control lengths of 0.5, 1.0, 1.5, and 2.0 m, capped relative
-to the first target distance. For difficult poses, a bounded extra search tries
-different entry guides and broader exit controls. Lateral exit offsets are
-enabled only for a reversal; ordinary routes retain the exit axis. Every
-candidate is checked for real cone clearance and strict boundary-segment
-crossings. Among candidates that pass, we select the lowest peak curvature,
-calculated from the spline's first and second derivatives. This is selection
-within a small candidate family, not a globally optimal curvature solution.
+Powell optimization varies endpoint handles. Costs penalize missed gates, close cone passes, observed-boundary crossings, excessive length, backward progress, curvature, initial-heading error, and unnecessary turn reversals.
 
-We densely evaluate the curve, approximate its cumulative arc length, and
-resample up to 8 m at **0.1 m spacing**. We check the connecting segments of these
-returned samples because those chords are what the tester displays. Clearance
-must be at least **0.25 m from real cone centers**. The output remains a list of
-points; its displayed segments approximate the smooth underlying curve.
+A weighted cost alone is insufficient: a candidate can trade a collision for a slightly smoother turn. Final selection therefore accepts only candidates satisfying:
 
-If no checked smooth candidate is available, we return a straight heading
-fallback. The former graph-polyline fallback was removed because it introduced
-corners. This fallback cannot establish a clear corridor in an unknown or
-contradictory scene. The endpoint is extended along the final direction within
-the spline domain; we do not extrapolate a cubic polynomial indefinitely.
+- at least **0.45 m** from every observed cone center to every returned path segment;
+- **zero strict crossings** of observed boundary segments;
+- a returned sample within **0.15 m** of every planned gate;
+- first-segment heading error at most **0.15 rad** from the car yaw;
+- peak estimated curvature at most **2.5 per metre**, checked on both the dense curve and returned path.
 
-### 7. Handle sparse and degenerate inputs
+Optimization targets 0.46 m clearance and closer gate passage to leave room for final acceptance. Curvature above 1.25 per metre is penalized: this corresponds to a preferred 0.8 m turning radius, not a guaranteed radius. If no candidate passes acceptance, the planner raises `ValueError` instead of returning the least-bad colliding route.
 
-| Condition | Behavior |
-|---|---|
-| No usable cones | Straight 8 m path along yaw |
-| One visible cone | Infer its opposite using yaw and assumed width; use the midpoint |
-| One real blue-yellow pair | Use its compatible midpoint directly |
-| Multiple cones on one side | Infer the opposite boundary and triangulate both sides |
-| Unequal counts on both sides | Triangulate real cones without requiring equal counts |
-| Collinear geometry / Qhull failure | Build compatible gates directly and connect in track order |
-| No compatible gates or eligible forward entry | Straight heading fallback |
-| No checked smooth connection | Straight heading fallback |
-| Duplicate detections | Deduplicate before triangulation |
-| Conflicting colors at one position | Discard that position |
+With no usable cones, cones wholly behind the car, or an ambiguous collinear corridor, the original heading-based straight fallback remains. These fallback geometries are separate from a failed curve search.
 
-We do not add random jitter to degenerate inputs. This avoids inventing
-geometry just to make triangulation succeed. Disconnected valid graph nodes
-are not joined arbitrarily when a triangulation already supplied gates.
+## Why this approach
 
-## How Part 2 uses three cones
+The earlier implementation used Delaunay gate connectivity followed by smoothing. The current workspace had already moved to direct pairing and curve optimization; this correction builds on that implementation. **The current version does not use Delaunay triangulation or graph search.** For these sparse local scenes, pairing gives explicit center targets, while continuous-curve search directly addresses gate passage and steering. Delaunay graph search remains a possible extension when substantially more cones or branches are available.
 
-Three same-side cones describe two segments. Endpoint tangents and the central
-tangent let the inferred opposite boundary change direction along a bend.
-After inference, triangulation, search, smoothing, and sampling are the same
-as for two visible boundaries.
-
-This uses the third cone through local geometry without a separate quadratic
-fit. It captures gentle bends while remaining sensitive to assumed width and
-noisy cone positions.
-
-| Added scenario | Purpose |
-|---|---|
-| 21 | Three blue cones, straight track |
-| 22 | Three yellow cones, straight track |
-| 23 | Three blue cones, left bend |
-| 24 | Three yellow cones, mirrored right bend |
-| 25 | Three blue cones, translated car with 90-degree yaw |
-| 26 | Three blue and two yellow cones on a bend |
-| 27 | Three blue and one yellow cone |
-| 28 | No cones, translated and angled car |
-| 29 | Both boundaries entirely behind the car |
-| 30 | Collinear mixed-color detections |
-| 31 | Repeated detection |
-| 32 | Three cones per side, observed 3 m track width |
+The previous checks were too permissive. A route could miss the corridor, and side checks could pass with an empty collection of samples near the cones. The revised checks require actual gate passage and nonempty samples along the straight single-side boundaries. Dense-curve checks also prevent a tiny cusp between output samples from being hidden by resampling.
 
 ## Validation results
 
-Validation used Python **3.10.12**, NumPy **2.2.6**, SciPy **1.15.3**, and
-Matplotlib **3.10.9** in the project virtual environment.
+All 32 supplied scenarios pass the output, clearance, boundary-crossing, gate-passage, and sampled smoothness checks. All 22 automated tests pass. The suite also verifies the specific reported routes, reflected missing cone, absence of turn oscillations in 19/26, input-order independence, duplicate handling, coordinate transformations, infeasible-gate reporting, and both viewer modes.
 
-| Check | Measured result |
-|---|---|
-| Behavioral test methods | 19 passed |
-| Scenarios checked | 32: original 20 plus 12 added cases |
-| Finite coordinates and correct start position | 32 / 32 passed |
-| Returned points | 81 in every supplied scenario |
-| Polyline length | 7.998–8.000 m |
-| Maximum point spacing | 0.100 m, within floating-point tolerance |
-| Minimum distance from a real cone center | 0.251 m, scenario 15 |
-| Strict observed-boundary crossings | 0 across all 32 scenarios |
-| Largest adjacent-sample heading change | 12.30 degrees |
-| Largest estimated polyline curvature | 2.150 per meter |
+Measured across the supplied cases:
 
-Tests cover exact straight-line expectations, inward offsets for both colors,
-mirrored bends, rotation and translation, input-order invariance, duplicates,
-invalid inputs, unavailable forward entries, and a forced Qhull failure. A
-test confirms the three-cone case invokes Delaunay with six real-plus-virtual points.
-Additional tests require heading changes below 15 degrees, estimated curvature
-below 3 per meter, and alignment of the first segment with initial yaw. The
-curvature check prevents extra samples alone from hiding an extremely tight
-turn. Viewer tests check every scenario appears in the gallery, sequential
-plotting, and CLI dispatch for both modes.
+| Measurement | Result |
+|---|---:|
+| Minimum observed-cone center clearance | 0.474 m |
+| Strict observed-boundary crossings | 0 |
+| Maximum adjacent heading change at 0.1 m spacing | 12.51 degrees |
+| Maximum estimated returned-path curvature | 2.187 per metre |
+| Tightest estimated turning radius | about 0.457 m |
+| Scenario 19 maximum adjacent heading change | 5.74 degrees |
+| Scenario 26 maximum adjacent heading change | 1.51 degrees |
 
-The independent validation script measures clearance to the whole polyline,
-not just samples. For these short boundaries, it reconstructs adjacent
-observed segments using the shortest visiting order and checks strict segment
-intersections. Touching or collinear overlap is not classified as a strict
-crossing. These checks are evidence for the listed scenes; they do not certify
-that the entire route lies in a known corridor.
+Scenario 14 still needs the tightest turn because its initial yaw points away from the corridor. The curves have continuous tangents and curvature, but the preferred 0.8 m minimum radius is not met in every case. No vehicle turning-radius specification was supplied; these results must not be described as a physical steering guarantee.
 
-We inspected the complete plot. New straight cases stay centered, one-sided
-bends mirror each other, and the translated case preserves orientation. Some
-starter cases require tight turns because car heading disagrees with boundary
-direction. Scenario 14 uses the heading fallback because its graph gates lie
-behind the car; it does not establish a route through those cones.
+Saved evidence:
 
-Detailed results: [metrics.json](docs/validation/metrics.json).
+- [All scenario plots](docs/validation/scenarios.png)
+- [Per-scenario measurements, gate errors, and inferred cones](docs/validation/metrics.json)
 
-![All 32 scenarios: blue and yellow cones, red car heading, green route](docs/validation/scenarios.png)
+## Run and inspect
 
-### Why smoothing was revised
+From the submission directory:
 
-The first implementation used an interpolating Hermite curve and a polyline
-fallback. Visual review and user feedback showed sharp bends. For example,
-scenario 5 had a direction change of approximately 153 degrees between its
-original 0.25 m segments. The B-spline revision removes interpolation-induced
-corners and blends difficult entries and reversals over more distance.
+```bash
+# All cases in two gallery windows
+env -u PYTHONPATH .venv/bin/python -m src.run --all
 
-To distinguish curve improvement from denser sampling, we resampled both
-versions at a common spacing of approximately 0.25 m. The baseline is commit
-`ddb7ac7`. Representative maximum heading changes were:
+# Large plots one at a time; close each window to advance
+env -u PYTHONPATH .venv/bin/python -m src.run --all --sequential
 
-| Scenario | Before | After, at the same comparison spacing |
-|---|---:|---:|
-| 3 | 28.1 degrees | 14.8 degrees |
-| 5 | 152.2 degrees | 25.1 degrees |
-| 8 | 49.6 degrees | 17.2 degrees |
-| 11 | 25.4 degrees | 16.4 degrees |
-| 13 | 46.5 degrees | 15.1 degrees |
-| 23 | 5.1 degrees | 2.6 degrees |
+# Inspect one case
+env -u PYTHONPATH .venv/bin/python -m src.run --scenario 6
 
-Not every local peak decreases: scenario 2 changes from 25.4 to 26.3 degrees
-at comparison spacing. Its curve remains C2 and passes the geometric checks.
-The new returned spacing is 0.1 m, giving a maximum adjacent-segment change of
-12.30 degrees across all supplied cases. Smoother geometry does not establish
-vehicle feasibility without a vehicle model.
+# Automated checks and saved validation plots
+env -u PYTHONPATH .venv/bin/python -m unittest discover -s tests -v
+env -u PYTHONPATH .venv/bin/python scripts/validate_paths.py
+```
 
-Full comparison: [smoothing_comparison.json](docs/validation/smoothing_comparison.json).
-
-![Original orange paths and revised green paths](docs/validation/smoothing_comparison.png)
+If dependencies are missing, install `requirements.txt` into the configured virtual environment. On a headless machine use `MPLBACKEND=Agg`; set `MPLCONFIGDIR=/tmp/path-planning-mpl` if the default Matplotlib cache is not writable. Headless mode saves validation plots but cannot open interactive windows.
 
 ## Assumptions and limitations
 
-- **Track width:** 2 m is assumed only when an entire side is absent. A wrong
-  width shifts the estimate. Partial opposite-side detections are used directly.
-- **Point vehicle:** the 0.25 m margin is measured to cone centers. Vehicle
-  dimensions, cone radii, speed, steering limits, and turning radius are not modeled.
-- **Local ordering:** a dominant axis directs the graph. Hairpins, loops,
-  strongly folded boundaries, and branches can defeat this order.
-- **Sparse geometry:** virtual boundaries and straight extension are estimates.
-  No-cone and behind-gate fallbacks cannot prove the unseen track is clear.
-- **Starting pose:** some cars start outside the apparent corridor or face away
-  from it. Geometric checks do not establish that those maneuvers are feasible.
-- **Smoothing:** control-point approximation can move the route away from exact
-  gate midpoints. C2 continuity does not impose a turning radius. Boundary
-  intersection checks do not prove full corridor containment, and the straight
-  fallback has no universal clearance guarantee.
-- **Numerical ambiguity:** cocircular cones may admit different Delaunay
-  diagonals across versions or platforms. Sorting stabilizes repeated inputs
-  in the tested environment but does not remove geometric ambiguity.
-- **Scope:** planning uses one snapshot. There is no temporal map, speed plan,
-  controller, or stop/failure status in the return type.
-
-Future improvements would include an explicit failure/stop result, curvature
-constraints, width estimation over time, and search without a single monotonic
-axis. These require additional task inputs or interface changes.
-
-## Delivered files and reproduction
-
-| File | Purpose |
-|---|---|
-| `src/path_planning.py` | Implementation inside `generatePath()` |
-| `src/scenarios.py` | Original scenarios plus 12 cases |
-| `src/tester.py` | Individual plots, two all-scenario galleries, sequential viewer |
-| `src/run.py` | Single-scenario, `--all`, and `--all --sequential` CLI |
-| `requirements.txt` | Matplotlib, NumPy, SciPy dependencies |
-| `tests/test_path_planning.py` | Behavioral regression tests |
-| `tests/test_tester.py` | Gallery, sequential viewer, CLI tests |
-| `scripts/validate_paths.py` | Numerical checks and contact sheet |
-| `docs/validation/metrics.json` | Per-scenario measurements |
-| `docs/validation/scenarios.png` | Visual evidence |
-| `docs/validation/gallery_1.png`, `gallery_2.png` | Saved gallery views |
-| `docs/validation/smoothing_comparison.*` | Before/after measurements and plot |
-| `README.md` | Task context, solution overview, run instructions |
-| `PLAN.md` | Updated implementation checklist |
-| `REPORT.md` | Method, reasoning, results, limitations |
-
-From the repository root:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python -m unittest discover -s tests -v
-python scripts/validate_paths.py
-python -m src.run --scenario 23
-python -m src.run --all
-python -m src.run --all --sequential
-```
-
-`--all` shows every scenario in two gallery windows containing 16 plots each.
-`--all --sequential` opens larger individual plots; close each plot to advance.
-Use a GUI-capable Matplotlib backend for interactive windows. `MPLBACKEND=Agg`
-is intended for automated validation and saving images.
-
-For the ROS-configured shell used during development:
-
-```bash
-env -u PYTHONPATH MPLCONFIGDIR=/tmp/path-planning-mpl MPLBACKEND=Agg \
-  .venv/bin/python -m unittest discover -s tests -v
-env -u PYTHONPATH MPLCONFIGDIR=/tmp/path-planning-mpl MPLBACKEND=Agg \
-  .venv/bin/python scripts/validate_paths.py
-```
-
-The task asks for one repository link containing both parts and documentation.
-The configured destination is [PlanningTask](https://github.com/hassanradwannn/PlanningTask).
+- Cone positions and clearances refer to centers. Car width, cone radius, wheelbase, speed, and maximum steering angle are unspecified. A real vehicle requires corresponding clearance and curvature limits.
+- A missing entire side uses an assumed 2 m track width. Incorrect width shifts its inferred centerline. Mirrored cones are inferred, not sensor observations.
+- PCA direction and longitudinal pairing assume a short local section. They do not solve arbitrary loops, hairpins, branches, or incorrect cone colors.
+- Only visible cones and segments joining same-color neighbors are checked. Unseen obstacles and track continuation remain unknown.
+- Dense sampling estimates curvature; it is not an analytic proof of a bound everywhere on the continuous curve.
+- The finite candidate search can fail even when some other valid route exists. Its error means no accepted candidate was found, not that the geometry is mathematically impossible.
+- Multi-start numerical optimization is appropriate for this assignment's small scenes; no real-time execution deadline is guaranteed.

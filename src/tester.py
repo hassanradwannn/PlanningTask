@@ -19,7 +19,7 @@ class PathTester:
         planner = PathPlanning(self.car_pose, self.cones)
         path = planner.generatePath()
 
-        self._plot_scene(path)
+        self._plot_scene(path, planner=planner)
         return path
 
     @classmethod
@@ -35,10 +35,11 @@ class PathTester:
             for name in names:
                 cones, car = make_scenario(name)
                 tester = cls(cones, car)
-                path = PathPlanning(car, cones).generatePath()
+                planner = PathPlanning(car, cones)
+                path = planner.generatePath()
                 paths[name] = path
                 print(f"Scenario {name}/{len(names)} — close the plot to continue")
-                tester._plot_scene(path, title=f"Scenario {name}")
+                tester._plot_scene(path, title=f"Scenario {name}", planner=planner)
                 plt.close()
             return paths
 
@@ -49,10 +50,11 @@ class PathTester:
             fig.suptitle(f"Path planning — scenarios {page[0]}–{page[-1]}", fontsize=16)
             for name, ax in zip(page, axes.flat):
                 cones, car = make_scenario(name)
-                path = PathPlanning(car, cones).generatePath()
+                planner = PathPlanning(car, cones)
+                path = planner.generatePath()
                 paths[name] = path
                 cls(cones, car)._plot_scene(path, ax=ax, title=f"Scenario {name}",
-                                            show=False, legend=False)
+                                            show=False, legend=False, planner=planner)
             for ax in list(axes.flat)[len(page):]:
                 ax.set_visible(False)
             fig.legend(handles=[
@@ -66,7 +68,8 @@ class PathTester:
         return paths
 
     def _plot_scene(self, path: Path2D, *, ax=None, title=None,
-                    show: bool = True, legend: bool = True) -> None:
+                    show: bool = True, legend: bool = True, planner=None) -> None:
+        from matplotlib.patches import Circle
         if ax is None:
             _, ax = plt.subplots(figsize=(8, 6))
         ax.set_aspect("equal", adjustable="box")
@@ -75,7 +78,9 @@ class PathTester:
         ax.set_ylabel("Y [m]")
         ax.set_title(title or "FSAI-Style Cone Track Path Planning Test")
         # Include the complete route and translated/rotated scenarios.
-        visible = [(self.car_pose.x, self.car_pose.y)] + [(c.x, c.y) for c in self.cones] + path
+        inferred = planner.inferred_cones if planner else []
+        visible = ([(self.car_pose.x, self.car_pose.y)]
+                   + [(c.x, c.y) for c in self.cones + inferred] + path)
         ax.set_xlim(min(p[0] for p in visible) - 1.0, max(p[0] for p in visible) + 1.0)
         ax.set_ylim(min(p[1] for p in visible) - 1.0, max(p[1] for p in visible) + 1.0)
 
@@ -89,6 +94,13 @@ class PathTester:
             ax.scatter(yellow_x, yellow_y, c="gold", edgecolors="black", label="Yellow (Right)")
         if blue_x:
             ax.scatter(blue_x, blue_y, c="royalblue", edgecolors="black", label="Blue (Left)")
+        for color, edge in ((0, "goldenrod"), (1, "royalblue")):
+            side = [c for c in inferred if c.color == color]
+            if side:
+                ax.scatter([c.x for c in side], [c.y for c in side], facecolors="none",
+                           edgecolors=edge, marker="o", label="Inferred opposite side")
+        for cone in self.cones:
+            ax.add_patch(Circle((cone.x, cone.y), 0.45, color="gray", alpha=0.12))
 
         # Plot car pose and heading arrow
         ax.scatter([self.car_pose.x], [self.car_pose.y], c="red", s=60, marker="o", label="Car")
