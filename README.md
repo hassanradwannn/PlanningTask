@@ -66,7 +66,13 @@ width, it assumes a **2 m track**. This also handles three cones along a bend.
 It compares quintic Bézier routes with degree-four/five spline routes through
 the gates. Unmatched cones are explicitly reflected using a nearby observed
 blue–yellow pair, or a 2 m assumed width when no pair exists. Inferred cones
-appear as hollow markers in the viewer; gray discs show the 0.45 m margin.
+appear as hollow markers in the viewer; gray discs show the 0.35 m margin.
+
+With both boundary colors available, the curve may pass anywhere inside the
+gate opening after insetting each end by the clearance margin. This gives it
+room to take a gentler turn without requiring an exact midpoint. The curve
+must actually cross every safe gate opening. Entirely missing sides retain
+their assumed centerline.
 
 The cost penalizes observed boundary crossings, close passes to cones, missed
 gates, tight curvature, and backtracking. Final selection rejects candidates
@@ -94,16 +100,17 @@ plots, add `--sequential` and close each plot to continue to the next scenario.
 
 The validation script writes [numerical results](docs/validation/metrics.json)
 and [scenario plots](docs/validation/scenarios.png). It checks the output
-contract, at least 0.45 m clearance from cone centers, zero strict crossings
-of observed boundary segments, actual passage within 0.15 m of center gates,
+contract, at least 0.35 m clearance from cone centers, zero strict crossings
+of observed boundary segments, actual crossing of the safe gate openings,
 and bounded heading change and curvature.
 The automated suite includes regressions for the reported problem scenes.
+See the [before/after comparison for 2, 3, and 14](docs/validation/clearance_comparison.png).
 
 The current solution uses direct cone pairing and curve optimization rather
 than the earlier Delaunay graph. It produces continuous curves, but a real
 car's minimum turning radius and width still need to be supplied before
-claiming the route is physically drivable. No accepted curve results in a
-`ValueError`; the planner does not silently return a colliding candidate.
+claiming the route is physically drivable. If no curve passes the checks,
+the planner raises `ValueError` instead of returning a colliding candidate.
 
 If ROS has added unrelated packages to `PYTHONPATH`, run commands with
 `env -u PYTHONPATH`. For a headless machine, use `MPLBACKEND=Agg`; if Matplotlib's

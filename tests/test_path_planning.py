@@ -5,7 +5,7 @@ import unittest
 
 import numpy as np
 
-from scripts.validate_paths import EXPECTED_GATES, boundary_crossings, cone_clearance, gate_errors, turn_metrics
+from scripts.validate_paths import EXPECTED_PORTALS, boundary_crossings, cone_clearance, corridor_passages, turn_metrics
 from src.models import CarPose, Cone
 from src.path_planning import PathPlanning
 from src.scenarios import get_scenario_names, make_scenario
@@ -113,12 +113,12 @@ class PathPlanningTests(unittest.TestCase):
             with self.subTest(scenario=name):
                 cones, car = make_scenario(name)
                 path = self.plan(cones, car)
-                self.assertGreaterEqual(cone_clearance(path, cones), 0.45 - 1e-8)
+                self.assertGreaterEqual(cone_clearance(path, cones), 0.35 - 1e-8)
                 self.assertEqual(boundary_crossings(path, cones), 0)
                 turn, curvature = turn_metrics(path)
                 self.assertLess(turn, 14.5)
                 self.assertLessEqual(curvature, 2.5)
-                self.assertTrue(all(error <= 0.15 for error in gate_errors(path, EXPECTED_GATES[name])))
+                self.assertTrue(all(corridor_passages(path, EXPECTED_PORTALS[name], 0.35)))
 
     def test_single_side_routes_choose_the_inside_of_the_boundary(self):
         for name, expected_sign in (("5", 1), ("8", -1)):
@@ -129,7 +129,7 @@ class PathPlanningTests(unittest.TestCase):
                 near_cones = path[(path[:, 0] >= min(c.x for c in cones))
                                   & (path[:, 0] <= max(c.x for c in cones))]
                 self.assertGreater(len(near_cones), 5, "Route must actually reach the cone stations")
-                self.assertTrue((expected_sign * (near_cones[:, 1] - boundary_y) > 0.45).all())
+                self.assertTrue((expected_sign * (near_cones[:, 1] - boundary_y) > 0.35).all())
                 self.assertLess(float(np.ptp(near_cones[:, 1])), 0.06)
 
     def test_missing_blue_is_reflected_to_continue_straight_corridor(self):
@@ -153,6 +153,19 @@ class PathPlanningTests(unittest.TestCase):
     def test_infeasible_narrow_gate_is_reported_instead_of_returning_collision(self):
         with self.assertRaisesRegex(ValueError, "No cone-clear"):
             self.plan([Cone(3.0, 0.3, 1), Cone(3.0, -0.3, 0)])
+
+    def test_smaller_margin_gives_gentler_reported_turns_without_collision(self):
+        for name, max_turn in (("2", 7.0), ("3", 6.0), ("14", 7.0)):
+            with self.subTest(scenario=name):
+                cones, car = make_scenario(name)
+                path = self.plan(cones, car)
+                self.assertLess(turn_metrics(path)[0], max_turn)
+                self.assertGreaterEqual(cone_clearance(path, cones), 0.35 - 1e-8)
+
+    def test_collision_checks_cover_segments_between_waypoints(self):
+        path = np.array([[0.0, 0.0], [1.0, 0.0]])
+        self.assertEqual(cone_clearance(path, [Cone(0.5, 0.0, 0)]), 0.0)
+        self.assertFalse(any(corridor_passages(path, [((0.5, 0.0), (0.5, 1.0))], 0.35)))
 
     def test_all_scenarios_have_no_abrupt_heading_jumps(self):
         for name in get_scenario_names():

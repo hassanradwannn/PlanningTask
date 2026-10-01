@@ -28,6 +28,46 @@ EXPECTED_GATES = {
     "15": [(2, 4), (3, 3)], "19": [(2, 1.5), (5, 2.5)],
     "26": [(2, 0), (4, 0.4), (6, 1.4)],
 }
+EXPECTED_PORTALS = {
+    "2": [((1, 1), (1, 3))],
+    "3": [((1, 1), (1, 3)), ((3, 1), (3, 3))],
+    "5": [((3, 2), (3, 4)), ((4, 2), (4, 4))],
+    "6": [((3, 2), (3, 4)), ((4, 2), (4, 4))],
+    "8": [((3, 1), (3, 3)), ((5, 1), (5, 3))],
+    "10": [((5, 2), (5, 3))],
+    "11": [((1, 2), (1, 3)), ((4, 2), (4, 5))],
+    "14": [((3, 2), (3, 5)), ((5, 2), (5, 5))],
+    "15": [((2, 3), (2, 5)), ((3, 2), (3, 4))],
+    "19": [((2, 0), (2, 3)), ((5, 2), (5, 3))],
+    "26": [((2, -1), (2, 1)), ((4, -0.6), (4, 1.4)), ((6, 0.4), (6, 2.4))],
+}
+
+
+def corridor_passages(path, portals, clearance=0.35):
+    """Independently intersect path segments with each inset gate opening."""
+    passages = []
+    for yellow, blue in portals:
+        yellow, blue = np.array(yellow, dtype=float), np.array(blue, dtype=float)
+        width = np.linalg.norm(blue - yellow)
+        if width < 2 * clearance:
+            passages.append(False)
+            continue
+        normal = (blue - yellow) / width
+        low, high = yellow + clearance * normal, blue - clearance * normal
+        if np.linalg.norm(high - low) < 1e-8:
+            passages.append(gate_errors(path, [low])[0] <= 1e-8)
+            continue
+        crossed = False
+        for a, b in zip(path[:-1], path[1:]):
+            matrix = np.column_stack((b - a, low - high))
+            if abs(np.linalg.det(matrix)) < 1e-10:
+                continue
+            travel_t, gate_t = np.linalg.solve(matrix, low - a)
+            if -1e-8 <= travel_t <= 1 + 1e-8 and -1e-8 <= gate_t <= 1 + 1e-8:
+                crossed = True
+                break
+        passages.append(crossed)
+    return passages
 
 
 def gate_errors(path, gates):
@@ -101,7 +141,9 @@ def main():
         max_turn, max_curvature = turn_metrics(path)
         smooth = max_turn < 14.5 and max_curvature <= 2.5
         errors = gate_errors(path, EXPECTED_GATES.get(name, planner.center_gates))
-        gates_passed = all(error <= 0.15 for error in errors)
+        passages = corridor_passages(path, EXPECTED_PORTALS.get(name, planner.gate_portals),
+                                     PathPlanning.CONE_CLEARANCE)
+        gates_passed = all(passages)
         valid = bool(np.isfinite(path).all() and np.allclose(path[0], [car.x, car.y])
                      and 5.0 <= steps.sum() <= 10.0 and steps.max() <= 0.5 + 1e-9)
         row = {"scenario": name, "points": len(path), "length_m": float(steps.sum()),
@@ -109,14 +151,16 @@ def main():
                "observed_boundary_crossings": crossings, "output_contract_passed": valid,
                "max_heading_change_deg": max_turn,
                "estimated_peak_curvature_per_m": max_curvature,
-               "gate_errors_m": errors, "gate_checks_passed": gates_passed,
+               "gate_midpoint_offsets_m": errors, "gate_portal_crossings": passages,
+               "gate_checks_passed": gates_passed,
+               "cone_clearance_requirement_m": PathPlanning.CONE_CLEARANCE,
                "inferred_cones": [{"x": c.x, "y": c.y, "color": c.color}
                                   for c in planner.inferred_cones],
                "smoothness_checks_passed": smooth}
         rows.append(row)
         # Geometric checks accompany the output contract on all supplied cases.
         if (not valid or not smooth or not gates_passed
-                or (clearance is not None and clearance < 0.45 - 1e-8) or crossings):
+                or (clearance is not None and clearance < PathPlanning.CONE_CLEARANCE - 1e-8) or crossings):
             failures.append(name)
         for color, face in ((0, "gold"), (1, "royalblue")):
             side = [c for c in cones if c.color == color]
@@ -126,7 +170,7 @@ def main():
                        facecolors="none", edgecolors=face, s=30)
         from matplotlib.patches import Circle
         for cone in cones:
-            ax.add_patch(Circle((cone.x, cone.y), 0.45, color="gray", alpha=0.12))
+            ax.add_patch(Circle((cone.x, cone.y), PathPlanning.CONE_CLEARANCE, color="gray", alpha=0.12))
         ax.plot(path[:, 0], path[:, 1], color="green")
         ax.scatter([car.x], [car.y], color="red", s=25)
         ax.arrow(car.x, car.y, np.cos(car.yaw), np.sin(car.yaw), color="red", head_width=0.15)

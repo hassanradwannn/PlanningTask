@@ -1,0 +1,50 @@
+[
+  {
+    "scenario": "2",
+    "before": {
+      "max_heading_change_deg": 10.341011755900704,
+      "estimated_peak_curvature_per_m": 1.8073478158840595,
+      "min_cone_clearance_m": 0.581460740618293,
+      "observed_boundary_crossings": 0
+    },
+    "after": {
+      "max_heading_change_deg": 6.475847548775969,
+      "estimated_peak_curvature_per_m": 1.1308483893049652,
+      "min_cone_clearance_m": 0.3538523499309196,
+      "observed_boundary_crossings": 0
+    },
+    "heading_change_reduction_percent": 37.377041031978585
+  },
+  {
+    "scenario": "3",
+    "before": {
+      "max_heading_change_deg": 7.0899084668041485,
+      "estimated_peak_curvature_per_m": 1.2382430361731085,
+      "min_cone_clearance_m": 0.49122157196832084,
+      "observed_boundary_crossings": 0
+    },
+    "after": {
+      "max_heading_change_deg": 5.3291915655647095,
+      "estimated_peak_curvature_per_m": 0.930451759844748,
+      "min_cone_clearance_m": 0.35997332352307515,
+      "observed_boundary_crossings": 0
+    },
+    "heading_change_reduction_percent": 24.834127400703963
+  },
+  {
+    "scenario": "14",
+    "before": {
+      "max_heading_change_deg": 12.506487362273798,
+      "estimated_peak_curvature_per_m": 2.1874414562901143,
+      "min_cone_clearance_m": 0.6589127670984624,
+      "observed_boundary_crossings": 0
+    },
+    "after": {
+      "max_heading_change_deg": 5.724731584976731,
+      "estimated_peak_curvature_per_m": 0.9995747368807345,
+      "min_cone_clearance_m": 0.42240298215048677,
+      "observed_boundary_crossings": 0
+    },
+    "heading_change_reduction_percent": 54.22590357188894
+  }
+]

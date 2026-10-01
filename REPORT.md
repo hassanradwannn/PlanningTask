@@ -17,15 +17,33 @@ The submission includes:
 
 | Scenarios | Correction |
 |---|---|
-| 2, 3, 10, 11, 15 | Check distance from every returned path segment to cone centers, reject collisions and boundary crossings, and require passage near the center gates. |
+| 2, 3, 10, 11, 15 | Check distance from every returned path segment to cone centers, reject collisions and boundary crossings, and require actual crossing of safe gate openings. |
 | 5 | Infer blue cones above the yellow boundary; enter the corridor smoothly and continue straight at `y = 3`. |
 | 6 | Reflect the unmatched yellow cone `(3, 2)` using the observed cross-track vector `(0, 2)`. Its missing blue partner is `(3, 4)`, producing the center gate `(3, 3)`. |
 | 8 | Infer yellow cones below the blue boundary; continue at `y = 2`. |
-| 14 | Allow a 10 m approach from the original yaw and require reaching the gates `(3, 3.5)` and `(5, 3.5)`. Clearance without reaching the track no longer counts as success. |
+| 14 | Allow a 10 m approach from the original yaw and require crossing the gates at `x = 3` and `x = 5` between the yellow and blue boundaries. Clearance without reaching the track no longer counts as success. |
 | 19 | Penalize unnecessary changes between left and right turning and test that the right-turning route does not oscillate. |
 | 26 | Reflect the missing yellow cone to `(6, 0.4)`, use the resulting gate `(6, 1.4)`, and test a continuous left bend. |
 
-The viewer now draws inferred cones as hollow markers. Gray discs show the 0.45 m cone-center clearance used for acceptance. These discs are a geometric margin, not a measured car footprint.
+The viewer now draws inferred cones as hollow markers. Gray discs show the 0.35 m cone-center clearance used for acceptance. These discs are a geometric margin, not a measured car footprint.
+
+## Smaller cone margin and gentler turns
+
+The requested adjustment reduced the hard clearance from 0.45 m to **0.35 m**. Reducing the margin alone was insufficient: the previous route was also forced almost through every exact gate midpoint. With both colors observed, a gate is now treated as an opening, inset by the clearance margin at both ends. The route must intersect that safe opening, but may choose a lateral position that reduces curvature. Every path segment still has to pass the cone-clearance and boundary-crossing checks.
+
+The midpoint remains a soft preference. For an entirely missing side, the assumed centerline is retained because its width is unobserved. For collinear targets, an extra approach candidate can finish at the first target with zero curvature and continue straight along the inferred centerline. Straightness within that section is a preference rather than a hard condition, which preserves gentler approaches to diagonal tracks. This makes scenario 8's observed section exactly straight.
+
+The curvature preference was strengthened to target at most 1.0 per metre. A flexible terminal offset and an intermediate Bézier control point allow broader turns; the fixed-exit search is retained as an additional candidate so a new optimization variable cannot remove its good solutions.
+
+| Scenario | Previous maximum heading change | Updated maximum | Reduction | Updated minimum cone-center clearance |
+|---|---:|---:|---:|---:|
+| 2 | 10.34° | 6.48° | 37% | 0.354 m |
+| 3 | 7.09° | 5.33° | 25% | 0.360 m |
+| 14 | 12.51° | 5.72° | 54% | 0.422 m |
+
+These heading changes are between adjacent returned segments at approximately 0.1 m spacing. Curvature also decreases in all three cases, so the improvement does not come from adding denser output points. All three still cross their safe cone gates and have zero observed-boundary crossings. The comparison uses the previous planner from commit `2132f9d`; scenario inputs are unchanged.
+
+[Before/after plots](docs/validation/clearance_comparison.png) and [comparison measurements](docs/validation/clearance_comparison.json) record the result.
 
 ## How the planner works
 
@@ -53,23 +71,24 @@ center = ((3, 2) + (3, 4)) / 2 = (3, 3)
 
 The search compares quintic Bézier curves and degree-four/five interpolating splines. Endpoint handles control initial and terminal tangents. Geometry-derived approach/departure knots give a turn more room when the car is poorly aligned with the first gate. A free intermediate Bézier control point provides another candidate for those difficult approaches.
 
-The endpoint lies 2 m beyond the last gate. This lets the curve pass through that gate without having to finish turning exactly there. The curve ends with zero curvature; any straight continuation therefore joins without a sudden steering change. Spline pieces also have continuous derivatives at their internal knots. There are no manually drawn scenario-specific paths.
+The endpoint lies 2 m beyond the last gate, with an optional lateral offset within its safe width. This lets the curve pass through that gate without having to finish turning exactly there. The curve ends with zero curvature; any straight continuation therefore joins without a sudden steering change. Spline pieces also have continuous derivatives at their internal knots. There are no manually drawn scenario-specific paths.
 
 The dense curve is sampled at 321 parameter values and resampled at approximately equal 0.1 m arc-length intervals for output.
 
 ### 4. Optimize, then reject invalid candidates
 
-Powell optimization varies endpoint handles. Costs penalize missed gates, close cone passes, observed-boundary crossings, excessive length, backward progress, curvature, initial-heading error, and unnecessary turn reversals.
+Powell optimization varies endpoint handles and, for the free-control family, an intermediate control point and optional lateral exit offset. Costs penalize missed gate openings, close cone passes, observed-boundary crossings, excessive length, backward progress, curvature, initial-heading error, and unnecessary turn reversals. Distance from a gate's center remains a small preference when both colors are available.
 
 A weighted cost alone is insufficient: a candidate can trade a collision for a slightly smoother turn. Final selection therefore accepts only candidates satisfying:
 
-- at least **0.45 m** from every observed cone center to every returned path segment;
+- at least **0.35 m** from every observed cone center to every returned path segment;
 - **zero strict crossings** of observed boundary segments;
-- a returned sample within **0.15 m** of every planned gate;
+- an actual returned-segment crossing of every gate opening after insetting each end by **0.35 m**;
+- for an entirely inferred side, a returned sample within **0.15 m** of each assumed center target;
 - first-segment heading error at most **0.15 rad** from the car yaw;
 - peak estimated curvature at most **2.5 per metre**, checked on both the dense curve and returned path.
 
-Optimization targets 0.46 m clearance and closer gate passage to leave room for final acceptance. Curvature above 1.25 per metre is penalized: this corresponds to a preferred 0.8 m turning radius, not a guaranteed radius. If no candidate passes acceptance, the planner raises `ValueError` instead of returning the least-bad colliding route.
+Optimization targets 0.36 m clearance to leave room for final acceptance. Curvature above 1.0 per metre is penalized: this corresponds to a preferred 1 m turning radius, not a guaranteed radius. Gates narrower than twice the clearance margin are rejected. If no candidate passes acceptance, the planner raises `ValueError` instead of returning the least-bad colliding route.
 
 With no usable cones, cones wholly behind the car, or an ambiguous collinear corridor, the original heading-based straight fallback remains. These fallback geometries are separate from a failed curve search.
 
@@ -81,26 +100,26 @@ The previous checks were too permissive. A route could miss the corridor, and si
 
 ## Validation results
 
-All 32 supplied scenarios pass the output, clearance, boundary-crossing, gate-passage, and sampled smoothness checks. All 22 automated tests pass. The suite also verifies the specific reported routes, reflected missing cone, absence of turn oscillations in 19/26, input-order independence, duplicate handling, coordinate transformations, infeasible-gate reporting, and both viewer modes.
+All 32 supplied scenarios pass the output, clearance, boundary-crossing, gate-passage, and sampled smoothness checks. All 24 automated tests pass. The suite also verifies the specific reported routes, reflected missing cone, absence of turn oscillations in 19/26, input-order independence, duplicate handling, coordinate transformations, infeasible-gate reporting, and both viewer modes. Added checks enforce the improved turns in 2/3/14 and detect a collision between waypoints, even when the endpoints are clear.
 
 Measured across the supplied cases:
 
 | Measurement | Result |
 |---|---:|
-| Minimum observed-cone center clearance | 0.474 m |
+| Minimum observed-cone center clearance | 0.354 m |
 | Strict observed-boundary crossings | 0 |
-| Maximum adjacent heading change at 0.1 m spacing | 12.51 degrees |
-| Maximum estimated returned-path curvature | 2.187 per metre |
-| Tightest estimated turning radius | about 0.457 m |
-| Scenario 19 maximum adjacent heading change | 5.74 degrees |
-| Scenario 26 maximum adjacent heading change | 1.51 degrees |
+| Maximum adjacent heading change at 0.1 m spacing | 7.63 degrees |
+| Maximum estimated returned-path curvature | 1.333 per metre |
+| Tightest estimated turning radius | about 0.750 m |
+| Scenario 19 maximum adjacent heading change | 5.22 degrees |
+| Scenario 26 maximum adjacent heading change | 1.00 degrees |
 
-Scenario 14 still needs the tightest turn because its initial yaw points away from the corridor. The curves have continuous tangents and curvature, but the preferred 0.8 m minimum radius is not met in every case. No vehicle turning-radius specification was supplied; these results must not be described as a physical steering guarantee.
+Scenario 16 now has the largest estimated curvature; scenario 14 is approximately 1.0 per metre after the adjustment. No scene worsened by more than 0.25 degrees in maximum adjacent heading change versus the previous run. The curves have continuous tangents and curvature, but the preferred 1 m minimum radius is not met in every case. No vehicle turning-radius specification was supplied; these results must not be described as a physical steering guarantee.
 
 Saved evidence:
 
 - [All scenario plots](docs/validation/scenarios.png)
-- [Per-scenario measurements, gate errors, and inferred cones](docs/validation/metrics.json)
+- [Per-scenario measurements, gate crossing results, midpoint offsets, and inferred cones](docs/validation/metrics.json)
 
 ## Run and inspect
 

@@ -100,7 +100,7 @@ class PathTester:
                 ax.scatter([c.x for c in side], [c.y for c in side], facecolors="none",
                            edgecolors=edge, marker="o", label="Inferred opposite side")
         for cone in self.cones:
-            ax.add_patch(Circle((cone.x, cone.y), 0.45, color="gray", alpha=0.12))
+            ax.add_patch(Circle((cone.x, cone.y), PathPlanning.CONE_CLEARANCE, color="gray", alpha=0.12))
 
         # Plot car pose and heading arrow
         ax.scatter([self.car_pose.x], [self.car_pose.y], c="red", s=60, marker="o", label="Car")

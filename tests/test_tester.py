@@ -12,6 +12,15 @@ from src.tester import PathTester
 
 
 class PathTesterTests(unittest.TestCase):
+    def setUp(self):
+        # Planner geometry is checked for every scenario in its own suite.
+        # These tests exercise figure creation, scenario coverage, and CLI flow.
+        planner = patch("src.tester.PathPlanning.generatePath", autospec=True,
+                        side_effect=lambda instance: [(instance.car_pose.x, instance.car_pose.y),
+                                                      (instance.car_pose.x + 1.0, instance.car_pose.y)])
+        planner.start()
+        self.addCleanup(planner.stop)
+
     def tearDown(self):
         plt.close("all")
 

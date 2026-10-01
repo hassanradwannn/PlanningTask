@@ -8,15 +8,17 @@ from src.models import CarPose, Cone, Path2D
 class PathPlanning:
     """Plan a short centerline from colored cone boundaries."""
 
+    CONE_CLEARANCE = 0.35
+
     def __init__(self, car_pose: CarPose, cones: List[Cone]):
         self.car_pose = car_pose
         self.cones = cones
         self.inferred_cones: List[Cone] = []
         self.center_gates: Path2D = []
+        self.gate_portals = []
 
     def generatePath(self) -> Path2D:
         """Return an 8–10 m path in world coordinates, sampled every 0.1 m.
-
         Blue marks the left edge and yellow the right. A missing edge is
         inferred using observed cross-track offsets or a 2 m track width.
         Raise ValueError if no candidate passes the geometric acceptance checks.
@@ -30,6 +32,7 @@ class PathPlanning:
         spacing, horizon, assumed_width = 0.1, 8.0, 2.0
         self.inferred_cones = []
         self.center_gates = []
+        self.gate_portals = []
         origin = np.array((self.car_pose.x, self.car_pose.y), dtype=float)
         yaw = self.car_pose.yaw
         if not np.isfinite(origin).all() or not math.isfinite(yaw):
@@ -90,7 +93,7 @@ class PathPlanning:
 
         # Pair opposing observations at similar longitudinal stations. Create
         # center targets from unmatched cones by offsetting their own boundary.
-        gates = []
+        gates, portals = [], []
         paired_blue, paired_yellow, widths, across_pairs = set(), set(), [], []
         if len(blue) and len(yellow):
             bp = (blue - origin) @ direction
@@ -103,6 +106,7 @@ class PathPlanning:
                 if width < 0.5 or along > max(1.5, width):
                     continue
                 gates.append((blue[bi] + yellow[yi]) / 2)
+                portals.append((yellow[yi], blue[bi]))
                 widths.append(width)
                 across_pairs.append(((blue[bi] + yellow[yi]) / 2, across))
                 paired_blue.add(int(bi))
@@ -133,17 +137,22 @@ class PathPlanning:
                 mirrored = side[index] + (-1 if color == 1 else 1) * across
                 self.inferred_cones.append(Cone(float(mirrored[0]), float(mirrored[1]), 1 - color))
                 gates.append((side[index] + mirrored) / 2)
+                portals.append((side[index], mirrored) if color == 0 else (mirrored, side[index]))
 
         infer(blue, 1, paired_blue)
         infer(yellow, 0, paired_yellow)
         if not gates:
             return straight()
         gates = np.array(gates)
-        gates = gates[np.argsort((gates - origin) @ direction, kind="stable")]
+        gate_order = np.argsort((gates - origin) @ direction, kind="stable")
+        gates = gates[gate_order]
+        portals = np.array(portals)[gate_order]
         if max(np.dot(gates[-1] - origin, direction),
                np.dot(gates[-1] - origin, heading)) < 0.2:
             return straight()
         self.center_gates = [tuple(map(float, gate)) for gate in gates]
+        self.gate_portals = [(tuple(map(float, low)), tuple(map(float, high)))
+                             for low, high in portals]
         last_gate = gates[-1]
         final_direction = direction
         if len(gates) > 1:
@@ -163,8 +172,20 @@ class PathPlanning:
         dense_t = np.linspace(0.0, 1.0, 321)
         basis = np.array([math.comb(5, i) * (1 - dense_t) ** (5 - i) * dense_t ** i
                           for i in range(6)]).T
-        margin = 0.46
-        curvature_limit = 1.25
+        margin = self.CONE_CLEARANCE + 0.01
+        curvature_limit = 1.0
+        paired_sides = bool(len(blue) and len(yellow))
+        single_straight = (not paired_sides and len(gates) > 1
+                           and np.max(np.abs((gates - gates[0]) @ left(final_direction))) < 1e-6)
+        safe_portals = []
+        for yellow_end, blue_end in portals:
+            across = blue_end - yellow_end
+            opening = float(np.linalg.norm(across))
+            if opening < 2 * self.CONE_CLEARANCE:
+                raise ValueError("No cone-clear route through a gate narrower than the clearance margin")
+            normal = across / opening
+            safe_portals.append((yellow_end + self.CONE_CLEARANCE * normal,
+                                 blue_end - self.CONE_CLEARANCE * normal))
         boundary_segments = []
         for side in (blue, yellow):
             if len(side) > 1:
@@ -190,7 +211,7 @@ class PathPlanning:
             cumulative = np.concatenate(([0.0], np.cumsum(lengths)))
             if cumulative[-1] < horizon:
                 extension = horizon - cumulative[-1] + spacing
-                tail = target + np.arange(1, int(math.ceil(extension / spacing)) + 1)[:, None] * spacing * final_direction
+                tail = curve[-1] + np.arange(1, int(math.ceil(extension / spacing)) + 1)[:, None] * spacing * final_direction
                 curve = np.vstack((curve, tail))
                 cumulative = np.concatenate((cumulative, cumulative[-1]
                                              + spacing * np.arange(1, len(tail) + 1)))
@@ -208,14 +229,44 @@ class PathPlanning:
             a, b = path[:-1], path[1:]
             delta = b - a
             delta_sq = np.maximum(np.sum(delta * delta, axis=1), 1e-12)
-            for gate in gates:
-                distance = float(np.linalg.norm(path - gate, axis=1).min())
-                feasible &= distance <= 0.15
-                score += 1e6 * max(0.0, distance - 0.08) ** 2
+            if single_straight:
+                stations = (path - gates[0]) @ final_direction
+                inside = ((stations >= 0) & (stations <= (gates[-1] - gates[0]) @ final_direction))
+                offsets = np.abs((path[inside] - gates[0]) @ left(final_direction))
+                if len(offsets):
+                    score += 10000.0 * float(np.mean(np.maximum(offsets - 0.005, 0) ** 2))
+            for gate, (low, high) in zip(gates, safe_portals):
+                across = high - low
+                along = np.clip((path - low) @ across / max(float(across @ across), 1e-12), 0, 1)
+                distance = float(np.linalg.norm(path - low - along[:, None] * across, axis=1).min())
+                # A gate is an opening, so allow a smooth route away from its
+                # exact midpoint. Require an actual segment crossing of the
+                # inset opening rather than mere proximity to the track.
+                denominator = delta[:, 0] * across[1] - delta[:, 1] * across[0]
+                valid = np.abs(denominator) > 1e-10
+                safe_denominator = np.where(valid, denominator, 1.0)
+                offset = low - a
+                travel_t = (offset[:, 0] * across[1] - offset[:, 1] * across[0]) / safe_denominator
+                gate_t = (offset[:, 0] * delta[:, 1] - offset[:, 1] * delta[:, 0]) / safe_denominator
+                crossed = np.any(valid & (travel_t >= -1e-8) & (travel_t <= 1 + 1e-8)
+                                 & (gate_t >= -1e-8) & (gate_t <= 1 + 1e-8))
+                if float(across @ across) < 1e-16:
+                    travel_t = np.clip(np.sum((low - a) * delta, axis=1) / delta_sq, 0, 1)
+                    crossed = np.linalg.norm(low - a - travel_t[:, None] * delta, axis=1).min() <= 1e-8
+                feasible &= crossed
+                score += 1e6 * max(0.0, distance - 0.045) ** 2
+                midpoint_distance = float(np.linalg.norm(path - gate, axis=1).min())
+                if paired_sides:
+                    score += 50.0 * midpoint_distance ** 2
+                else:
+                    # An entirely inferred boundary has no measured width;
+                    # retain its conservative centerline and straight section.
+                    feasible &= midpoint_distance <= 0.15
+                    score += 1e6 * max(0.0, midpoint_distance - 0.08) ** 2
             for cone in cones:
                 projection = np.clip(np.sum((cone - a) * delta, axis=1) / delta_sq, 0, 1)
                 distance = float(np.linalg.norm(cone - (a + projection[:, None] * delta), axis=1).min())
-                feasible &= distance >= 0.45
+                feasible &= distance >= self.CONE_CLEARANCE
                 score += 1e6 * max(0.0, margin - distance) ** 2
             # A boundary crossing is a route failure, not a minor smoothing
             # preference. Check the actual segments the tester will draw.
@@ -232,7 +283,7 @@ class PathPlanning:
             directions = delta / np.maximum(speed[:, None], 1e-12)
             turns = np.arccos(np.clip(np.sum(directions[:-1] * directions[1:], axis=1), -1, 1))
             curvature = turns / np.maximum((speed[:-1] + speed[1:]) / 2, 1e-12)
-            score += float(np.mean(curvature ** 2))
+            score += 10.0 * float(np.mean(curvature ** 2))
             score += 10000.0 * max(0.0, float(curvature.max()) - curvature_limit) ** 2
             score += 25.0 * max(0.0, float(np.linalg.norm(np.diff(curve, axis=0), axis=1).sum())
                                  - horizon + 0.1) ** 2
@@ -295,6 +346,11 @@ class PathPlanning:
 
         seeds = [(a, b) for a in (0.3, 0.75, 1.5, 3.0)
                  for b in (0.3, 0.75, 1.5, 3.0)]
+        if single_straight and np.linalg.norm(gates[0] - origin) > 1e-6:
+            # Enter the straight inferred corridor with zero terminal curvature,
+            # then continue along it instead of bending between collinear cones.
+            for degree in (4, 5):
+                fit(spline_builder(np.vstack((origin, gates[0])), degree), seeds)
         if len(gates):
             nodes = np.vstack((origin, gates, target))
             if np.min(np.linalg.norm(np.diff(nodes, axis=0), axis=1)) > 1e-6:
@@ -310,17 +366,31 @@ class PathPlanning:
                         fit(spline_builder(nodes, degree), seeds)
 
         first_direction = unit(gates[0] - origin, heading)
-        if np.dot(first_direction, heading) < math.cos(1.0):
+        misaligned = np.dot(first_direction, heading) < math.cos(1.0)
+        if misaligned or (paired_sides and np.dot(first_direction, heading) < math.cos(0.25)):
+            end_across = unit(portals[-1, 1] - portals[-1, 0], left(final_direction))
             def free_bezier(values):
+                end = target + (values[4] if len(values) > 4 else 0.0) * end_across
                 controls = np.array((origin, origin + values[0] * heading,
                                      origin + values[2] * direction + values[3] * left(direction),
-                                     target - 2 * values[1] * final_direction,
-                                     target - values[1] * final_direction, target))
+                                     end - 2 * values[1] * final_direction,
+                                     end - values[1] * final_direction, end))
                 return basis @ controls
             free_seeds = [(a, b, float(2 * a * heading @ direction),
                            float(2 * a * heading @ left(direction)))
                           for a in (0.5, 1.5, 3.0) for b in (0.5, 1.5, 3.0)]
-            fit(free_bezier, free_seeds, (*bounds, (-limit, limit), (-limit, limit)))
+            free_bounds = (*bounds, (-limit, limit), (-limit, limit))
+            # Retain the fixed-exit search as well as the flexible-exit one:
+            # adding a parameter can lead the optimizer to another local basin.
+            fit(free_bezier, free_seeds, free_bounds)
+            if paired_sides:
+                lateral_room = float(np.linalg.norm(portals[-1, 1] - portals[-1, 0])) / 2 - margin
+                if lateral_room > 0:
+                    free_seeds = [(*seed, shift) for seed in free_seeds
+                                  for shift in (-lateral_room / 2, 0.0, lateral_room / 2)]
+                    free_bounds = (*free_bounds, (-lateral_room, lateral_room))
+                    fit(free_bezier, free_seeds, free_bounds)
+        if misaligned:
             for departure in (0.5, 1.0, 1.5):
                 for approach in (0.0, 1.0):
                     nodes = [origin, origin + departure * heading]
