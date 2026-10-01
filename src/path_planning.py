@@ -202,7 +202,7 @@ class PathPlanning:
         def curve_cost(curve, require_feasible=False):
             path = sampled_path(curve)
             if path is None:
-                return 1e8
+                return math.inf if require_feasible else 1e8
             score = 0.0
             feasible = True
             a, b = path[:-1], path[1:]
