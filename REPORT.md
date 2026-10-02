@@ -209,10 +209,17 @@ If dependencies are missing, install `requirements.txt` into the configured virt
 Run from the repository root with dependencies already installed in `.venv`:
 
 ```powershell
-# Automated tests
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+# All cases in two gallery windows
+.\.venv\Scripts\python.exe -m src.run --all
 
-# Numerical checks and saved validation plots
+# Large plots one at a time; close each window to advance
+.\.venv\Scripts\python.exe -m src.run --all --sequential
+
+# Inspect one case
+.\.venv\Scripts\python.exe -m src.run --scenario 6
+
+# Automated checks and saved validation plots
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 .\.venv\Scripts\python.exe scripts/validate_paths.py
 ```
 
