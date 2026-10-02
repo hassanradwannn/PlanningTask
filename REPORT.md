@@ -185,6 +185,8 @@ Saved evidence:
 
 From the submission directory:
 
+### macOS / Linux
+
 ```bash
 # All cases in two gallery windows
 env -u PYTHONPATH .venv/bin/python -m src.run --all
@@ -201,6 +203,18 @@ env -u PYTHONPATH .venv/bin/python scripts/validate_paths.py
 ```
 
 If dependencies are missing, install `requirements.txt` into the configured virtual environment. On a headless machine use `MPLBACKEND=Agg`; set `MPLCONFIGDIR=/tmp/path-planning-mpl` if the default Matplotlib cache is not writable. Headless mode saves validation plots but cannot open interactive windows.
+
+### Windows (PowerShell)
+
+Run from the repository root with dependencies already installed in `.venv`:
+
+```powershell
+# Automated tests
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+
+# Numerical checks and saved validation plots
+.\.venv\Scripts\python.exe scripts/validate_paths.py
+```
 
 ## Assumptions and limitations
 
